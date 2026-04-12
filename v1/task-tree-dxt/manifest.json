@@ -1,7 +1,7 @@
 {
   "dxt_version": "0.2",
-  "name": "task-tree-core",
-  "display_name": "Task Tree Core",
+  "name": "task-tree-v1",
+  "display_name": "Task Tree V1 (Core)",
   "version": "0.1.0",
   "description": "Core/V1 task-tree DXT extension for local MCP over http://127.0.0.1:8879.",
   "author": {

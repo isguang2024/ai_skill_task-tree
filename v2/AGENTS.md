@@ -1,6 +1,6 @@
 # Task Tree V2
 
-本仓库是 `task-tree-v2` 的独立版本，默认运行在：
+本版本（V2）是统一 `task-tree` 仓库中的一部分，默认运行在：
 
 - 前端工作台：`http://127.0.0.1:8880`
 - HTTP API：`http://127.0.0.1:8880/v1/...`
@@ -18,21 +18,21 @@
 ## 项目结构
 
 ```text
-task-tree-v2/
-  backend/               # Go 后端（模块根）
+task-tree/v2/           # 统一仓库中的 V2 版本
+  backend/              # Go 后端（模块根）
     cmd/task-tree-service/
     internal/tasktree/
     migrations/
     docs/
-    data/                # 运行时 SQLite 数据
-  frontend/              # Vue 3 前端
+    data/               # 运行时 SQLite 数据
+  frontend/             # Vue 3 前端
     src/
-    dist/                # npm run build 产物
-  docs/                  # 项目级使用文档与变更记录
-  skill/                 # V2 独立技能文档
-  task-tree-dxt/         # V2 独立 DXT 代理与打包文件
+    dist/               # npm run build 产物
+  docs/                 # 项目级使用文档与变更记录
+  skill/                # V2 技能文档
+  task-tree-dxt/        # V2 DXT 代理与打包文件
   启动后端.bat
-  启动前端.bat
+  启动前端_前端开发测试服务.bat
 ```
 
 ## 运行方式

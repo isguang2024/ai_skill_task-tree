@@ -3,13 +3,13 @@
 本文档面向两类用户：
 
 - 使用本地技能文档的人
-- 通过 MCP / DXT 接入 `task-tree-v2` 的人
+- 通过 MCP / DXT 接入本项目的人
 
 ## 1. V2 对应的技能文件
 
-V2 的技能文件在：
+本项目的技能文件在：
 
-- `C:\Users\Administrator\Desktop\Ai任务步骤记录\task-tree-v2\skill\SKILL.md`
+- `./skill/SKILL.md`
 
 它描述的是：
 
@@ -18,19 +18,19 @@ V2 的技能文件在：
 - HTTP API 端点
 - 常用工作流
 
-当前 V2 技能默认连接：
+当前技能默认连接：
 
 ```json
 {
   "mcpServers": {
-    "task-tree-v2": {
+    "task-tree": {
       "url": "http://127.0.0.1:8880/mcp"
     }
   }
 }
 ```
 
-## 2. V2 的 MCP 地址
+## 2. 本项目的 MCP 地址
 
 - `http://127.0.0.1:8880/mcp`
 
@@ -115,7 +115,7 @@ V2 当前 MCP 主要覆盖五大类。
 
 完整开放清单见：
 
-- [backend/docs/mcp-open-manifest.txt](/C:/Users/Administrator/Desktop/Ai任务步骤记录/task-tree-v2/backend/docs/mcp-open-manifest.txt)
+- [backend/docs/mcp-open-manifest.txt](../backend/docs/mcp-open-manifest.txt)
 
 ## 4. 当前哪些能力不是 MCP 工具
 
@@ -151,9 +151,9 @@ V2 里的 Memory 不应该只被当成“人工备注框”。
 
 ## 5. DXT 对应关系
 
-V2 的 DXT 在：
+本项目的 DXT 在：
 
-- `C:\Users\Administrator\Desktop\Ai任务步骤记录\task-tree-v2\task-tree-dxt`
+- `./task-tree-dxt`
 
 其中：
 

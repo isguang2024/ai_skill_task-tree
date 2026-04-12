@@ -1,6 +1,6 @@
 # Task Tree V2 文档总览
 
-`task-tree-v2` 同时提供：
+本项目（Task Tree V2）同时提供：
 
 - 前端工作台
 - HTTP API
@@ -12,19 +12,19 @@
 
 ### 如果你是本地使用者
 
-看 [本地启动与使用.md](/C:/Users/Administrator/Desktop/Ai任务步骤记录/task-tree-v2/docs/本地启动与使用.md)。
+看 [本地启动与使用.md](./本地启动与使用.md)。
 
 ### 如果你想先了解项目用途和用法
 
-看 [项目说明页说明.md](/C:/Users/Administrator/Desktop/Ai任务步骤记录/task-tree-v2/docs/项目说明页说明.md)。
+看 [项目说明页说明.md](./项目说明页说明.md)。
 
 ### 如果你是技能 / MCP 使用者
 
-看 [技能与MCP说明.md](/C:/Users/Administrator/Desktop/Ai任务步骤记录/task-tree-v2/docs/技能与MCP说明.md)。
+看 [技能与MCP说明.md](./技能与MCP说明.md)。
 
 ### 如果你要确认 HTTP 与 MCP 的真实边界
 
-看 [backend/docs/http-mcp-parity.md](/C:/Users/Administrator/Desktop/Ai任务步骤记录/task-tree-v2/backend/docs/http-mcp-parity.md)。
+看 [backend/docs/http-mcp-parity.md](../backend/docs/http-mcp-parity.md)。
 
 ## 端口约定
 

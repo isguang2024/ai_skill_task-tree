@@ -1,6 +1,6 @@
-# Task Tree Service
+# Task Tree V1 (Core)
 
-本仓库提供一套本地任务树服务，面向三类入口同时工作：
+本版本（V1 / Core）提供一套本地任务树服务，面向三类入口同时工作：
 
 - 前端工作台：`http://127.0.0.1:8879`
 - HTTP API：`http://127.0.0.1:8879/v1/...`
@@ -11,40 +11,40 @@
 ## 项目结构
 
 ```
-task-tree-core/
+task-tree/v1/       # 统一仓库中的 V1 版本
   backend/          # Go 后端源码
     *.go            # 所有 Go 源文件
     migrations/     # SQLite 数据库迁移文件（.sql）
     docs/           # 后端相关文档
     ai.env.txt      # AI 服务配置（本地，不提交）
     mcp-config.example.json  # MCP 配置示例
-  frontend/         # Vue 3 + Naive UI 前端
+  frontend/         # Vue 2 + Naive UI 前端
     src/            # 前端源码
     dist/           # 构建产物（由 npm run build 生成）
     package.json
     vite.config.js
-  skill/            # Claude Code Skill 技能文件（.md）
+  skill/            # 技能文档
   data/             # 运行时数据（SQLite DB，自动创建，不提交）
   go.mod / go.sum   # Go 模块定义（须在根目录）
   AGENTS.md         # 本文件，AI 协作约束说明
-  task-tree-core.exe  # 构建产物
-  启动.bat / start-dev.bat
+  task-tree-service  # 构建产物
+  启动后端.bat / 启动前端.bat
 ```
 
 ## 构建与启动
 
 ```powershell
 # 构建后端
-go build -o task-tree-core.exe ./backend
+go build -o task-tree-service.exe ./cmd/task-tree-service
 
 # 开发运行（不需要先构建）
-go run ./backend serve
+go run ./cmd/task-tree-service serve
 
 # 构建前端
 cd frontend && npm run build
 
 # 启动服务（前端已构建）
-.\task-tree-core.exe serve
+.\task-tree-service.exe serve
 ```
 
 ## 核心原则
