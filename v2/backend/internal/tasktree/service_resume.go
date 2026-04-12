@@ -81,6 +81,58 @@ func (a *App) buildFocusNodes(ctx context.Context, taskID string) ([]jsonMap, js
 	return items, nextNode, nil
 }
 
+func (a *App) findNextNode(ctx context.Context, taskID string) (jsonMap, error) {
+	_, nextNode, err := a.buildFocusNodes(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if nextNode == nil {
+		return jsonMap{
+			"found":   false,
+			"message": "当前没有可执行的节点（所有节点已完成或被阻塞）",
+		}, nil
+	}
+
+	nodeID := asString(nextNode["id"])
+	memory, _ := a.getNodeMemory(ctx, nodeID)
+
+	// 构建推荐动作
+	status := asString(nextNode["status"])
+	var action string
+	switch status {
+	case "ready":
+		action = "claim"
+	case "running":
+		if leaseActive(nextNode) {
+			action = "continue"
+		} else {
+			action = "claim"
+		}
+	default:
+		action = "review"
+	}
+
+	return jsonMap{
+		"found":  true,
+		"node":   buildNodeSummary(nextNode),
+		"memory": memory,
+		"recommended_action": jsonMap{
+			"action":  action,
+			"node_id": nodeID,
+			"hint": func() string {
+				switch action {
+				case "claim":
+					return "调用 task_tree_claim(node_id) 领取此节点，然后开始执行"
+				case "continue":
+					return "此节点已被领取且 lease 有效，直接继续执行"
+				default:
+					return "检查节点状态后决定下一步"
+				}
+			}(),
+		},
+	}, nil
+}
+
 func (a *App) buildNodeContext(ctx context.Context, nodeID string) (jsonMap, error) {
 	node, err := a.findNode(ctx, nodeID, false)
 	if err != nil {
@@ -215,6 +267,38 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 			return nil, err
 		}
 	}
+	// 构建推荐动作
+	var recommendedAction jsonMap
+	if nextNode != nil {
+		nodeStatus := asString(nextNode["status"])
+		action := "claim"
+		hint := "调用 task_tree_claim(node_id) 领取此节点，然后按节点要求执行实际操作"
+		if nodeStatus == "running" && leaseActive(nextNode) {
+			action = "continue"
+			hint = "此节点已被领取且 lease 有效，直接继续执行节点要求的操作"
+		}
+		recommendedAction = jsonMap{
+			"action":  action,
+			"node_id": asString(nextNode["id"]),
+			"title":   asString(nextNode["title"]),
+			"hint":    hint,
+		}
+	} else {
+		// 判断是否全部完成
+		remainingCount := asFloat(remaining["total"]) - asFloat(remaining["done"]) - asFloat(remaining["canceled"])
+		if remainingCount <= 0 {
+			recommendedAction = jsonMap{
+				"action": "all_done",
+				"hint":   "所有节点已完成，可以进行任务收尾",
+			}
+		} else {
+			recommendedAction = jsonMap{
+				"action": "blocked",
+				"hint":   "当前阶段没有可执行节点，所有待执行节点处于 blocked 或 paused 状态",
+			}
+		}
+	}
+
 	resp := jsonMap{
 		"task":               task,
 		"task_memory":        taskMemory,
@@ -229,6 +313,7 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 		"recent_runs":        runs,
 		"artifacts":          artifacts,
 		"next_node":          nextCtx,
+		"recommended_action": recommendedAction,
 		"debug":              debug,
 	}
 	if nodeOpts.IncludeFullTree {

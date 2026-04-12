@@ -73,11 +73,15 @@ ready (reopen)
 ### 【场景2】继续上次工作
 
 ```
-1. task_tree_resume(task_id)           // 获取任务上下文 + 下一节点
-2. task_tree_get_node_context(node_id) // 查看节点的Memory和历史
-3. task_tree_claim                     // 领取节点
-4. [执行工作]
+1. task_tree_resume(task_id)           // 获取上下文 + recommended_action
+2. 按 recommended_action.hint 执行：
+   - action=claim → task_tree_claim(node_id)
+   - action=continue → 直接继续执行
+   - action=all_done → 任务收尾
+3. [按节点要求执行实际操作]
+4. task_tree_patch_node_memory         // 写入结构化 Memory
 5. task_tree_complete                  // 完成节点
+6. task_tree_next_node                 // 自动获取下一个节点
 ```
 
 ### 【场景3】查看待办
@@ -116,6 +120,7 @@ task_tree_progress(node_id, progress: 0.3, message: "进度说明")
 | 读取任务详情 | `task_tree_get_task` |
 | 搜索任务 | `task_tree_search` |
 | 获取任务树+下一步 | `task_tree_resume` ⭐ |
+| 获取下一个可执行节点 | `task_tree_next_node` ⭐ |
 | 获取任务统计 | `task_tree_get_remaining` |
 
 ### 我想…操作任务
@@ -162,14 +167,15 @@ task_tree_progress(node_id, progress: 0.3, message: "进度说明")
 | 创建阶段 | `task_tree_create_stage` |
 | 激活阶段 | `task_tree_activate_stage` |
 
-### 我想…读取Memory
+### 我想…读取和写入 Memory
 
 | 需求 | 工具 |
 |------|------|
 | 任务 Memory | `HTTP GET /v1/tasks/{id}/memory` |
 | 阶段 Memory | `HTTP GET /v1/stages/{id}/memory` |
 | 节点 Memory | `HTTP GET /v1/nodes/{id}/memory` |
-| 更新 Memory | `HTTP PATCH /v1/[tasks\|stages\|nodes]/{id}/memory` |
+| 更新节点 Memory（结构化） | `task_tree_patch_node_memory` ⭐ |
+| 更新 Memory（备注） | `HTTP PATCH /v1/[tasks\|stages\|nodes]/{id}/memory` |
 
 ### 我想…查看事件和产物
 
@@ -238,7 +244,8 @@ task_tree_progress(node_id, progress: 0.3, message: "进度说明")
 | `task_tree_hard_delete_task` | 硬删除任务 |
 | `task_tree_restore_task` | 从回收站恢复 |
 | `task_tree_transition_task` | 任务状态流转（pause/reopen/cancel） |
-| `task_tree_resume` | **核心**：获取任务完整上下文（树、Memory、下一步、事件） |
+| `task_tree_resume` | **核心**：获取任务完整上下文（树、Memory、下一步、recommended_action） |
+| `task_tree_next_node` | **核心**：获取下一个可执行节点 + 推荐动作（claim/continue） |
 | `task_tree_get_remaining` | 获取任务剩余进度统计 |
 
 ### 节点操作
@@ -295,6 +302,7 @@ task_tree_progress(node_id, progress: 0.3, message: "进度说明")
 | `task_tree_create_artifact` | 创建产物链接 |
 | `task_tree_upload_artifact` | 上传产物文件 |
 | `task_tree_list_artifacts` | 列出产物 |
+| `task_tree_patch_node_memory` | **核心**：更新节点 Memory 结构化字段（MCP 直接调用） |
 | `task_tree_sweep_leases` | 清理过期 lease |
 | `task_tree_empty_trash` | 清空回收站 |
 
@@ -327,6 +335,7 @@ POST   /v1/tasks/{id}/restore             — 恢复
 POST   /v1/tasks/{id}/transition          — 状态流转
 GET    /v1/tasks/{id}/resume              — 任务上下文（核心）
 GET    /v1/tasks/{id}/remaining           — 剩余进度
+GET    /v1/tasks/{id}/next-node           — 下一个可执行节点
 GET    /v1/tasks/{id}/events/stream       — SSE 事件流
 ```
 
@@ -639,18 +648,23 @@ task_tree_transition_node(node_id, action: "unblock")
 
 ```
 1. 任务已存在?
-   ├─ 是 → task_tree_resume(task_id)
+   ├─ 是 → task_tree_resume(task_id) → 看 recommended_action
    └─ 否 → task_tree_create_task + task_tree_create_node
 
-2. 获得下一节点后 →  task_tree_claim
+2. 获得下一节点后 → task_tree_claim
 
-3. 有执行文本日志?
-   ├─ 是 → task_tree_start_run + task_tree_append_run_log(多个) + task_tree_finish_run
-   └─ 否 → 直接 task_tree_progress 上报进度
+3. 执行节点要求的实际操作（改代码/删文件/跑测试等）
 
-4. 节点完成 → task_tree_complete
+4. 有执行日志需要记录?
+   ├─ 是 → task_tree_start_run + task_tree_append_run_log + task_tree_finish_run
+   └─ 否 → task_tree_progress 上报进度
 
-5. 需要补充说明?
-   ├─ 是 → HTTP PATCH /v1/nodes/{id}/memory
-   └─ 否 → 完成
+5. 写入 Memory → task_tree_patch_node_memory ⭐
+   （summary_text + conclusions + decisions + evidence）
+
+6. 完成节点 → task_tree_complete
+
+7. 继续? → task_tree_next_node ⭐
+   ├─ found=true → 回到步骤 2
+   └─ found=false → 阶段/任务完成
 ```

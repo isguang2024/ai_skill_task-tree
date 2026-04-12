@@ -181,6 +181,18 @@ type memoryPatchBody struct {
 	ExpectedVersion *int   `json:"expected_version"`
 }
 
+type memoryFullPatchBody struct {
+	SummaryText    *string  `json:"summary_text"`
+	Conclusions    []string `json:"conclusions"`
+	Decisions      []string `json:"decisions"`
+	Risks          []string `json:"risks"`
+	Blockers       []string `json:"blockers"`
+	NextActions    []string `json:"next_actions"`
+	Evidence       []string `json:"evidence"`
+	ManualNoteText *string  `json:"manual_note_text"`
+	ExpectedVersion *int    `json:"expected_version"`
+}
+
 type transitionBody struct {
 	Action          string  `json:"action"`
 	Message         *string `json:"message"`

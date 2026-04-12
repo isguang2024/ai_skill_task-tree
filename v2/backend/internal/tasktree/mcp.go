@@ -444,6 +444,20 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 		result, err = s.app.search(ctx, stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "kind"), intArg(payload.Arguments, "limit", 30))
 	case "task_tree_work_items":
 		result, err = s.app.listWorkItems(ctx, stringArgDefault(payload.Arguments, "status", "ready"), boolArg(payload.Arguments, "include_claimed"), intArg(payload.Arguments, "limit", 50))
+	case "task_tree_patch_node_memory":
+		result, err = s.app.patchNodeMemoryFull(ctx, stringArg(payload.Arguments, "node_id"), memoryFullPatchBody{
+			SummaryText:     optStringArg(payload.Arguments, "summary_text"),
+			Conclusions:     stringSliceArg(payload.Arguments, "conclusions"),
+			Decisions:       stringSliceArg(payload.Arguments, "decisions"),
+			Risks:           stringSliceArg(payload.Arguments, "risks"),
+			Blockers:        stringSliceArg(payload.Arguments, "blockers"),
+			NextActions:     stringSliceArg(payload.Arguments, "next_actions"),
+			Evidence:        stringSliceArg(payload.Arguments, "evidence"),
+			ManualNoteText:  optStringArg(payload.Arguments, "manual_note_text"),
+			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
+		})
+	case "task_tree_next_node":
+		result, err = s.app.findNextNode(ctx, stringArg(payload.Arguments, "task_id"))
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", payload.Name)
 	}
@@ -966,6 +980,29 @@ func mcpTools() []mcpTool {
 				"include_claimed": boolSchema("是否包含已 claim 项"),
 				"limit":           intSchema("返回数量"),
 			}, nil),
+		},
+		{
+			Name:        "task_tree_patch_node_memory",
+			Description: "更新节点 Memory 的结构化字段。支持部分更新：只传需要修改的字段，未传的字段保持不变。用于在节点完成后沉淀关键信息。",
+			InputSchema: objectSchema(map[string]any{
+				"node_id":          stringSchema("节点 ID"),
+				"summary_text":     stringSchema("摘要：做了什么 + 量化结果"),
+				"conclusions":      arrayStringSchema("结论列表：分析发现和判断依据"),
+				"decisions":        arrayStringSchema("决策列表：选择了什么方案、为什么"),
+				"risks":            arrayStringSchema("风险列表：已知风险和隐患"),
+				"blockers":         arrayStringSchema("阻塞项列表"),
+				"next_actions":     arrayStringSchema("下一步行动列表"),
+				"evidence":         arrayStringSchema("证据列表：改动的文件路径、命令输出、验证结果"),
+				"manual_note_text": stringSchema("人工备注"),
+				"expected_version": intSchema("乐观锁版本号"),
+			}, []string{"node_id"}),
+		},
+		{
+			Name:        "task_tree_next_node",
+			Description: "获取当前任务中下一个应该执行的节点。优先返回当前阶段的 running 节点，其次是 ready 节点。包含推荐动作（claim/continue）。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringSchema("任务 ID"),
+			}, []string{"task_id"}),
 		},
 	}
 }

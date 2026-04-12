@@ -308,12 +308,26 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, item)
 	case strings.HasPrefix(path, "/nodes/") && strings.HasSuffix(path, "/memory") && r.Method == http.MethodPatch:
-		var body memoryPatchBody
+		var body memoryFullPatchBody
 		if err := decodeJSON(r, &body); err != nil {
 			writeErr(w, err)
 			return
 		}
-		item, err := a.patchNodeMemoryManualNote(r.Context(), nodeIDFromPath(path), body.ManualNoteText, body.ExpectedVersion)
+		// 兼容旧接口：如果只传了 manual_note_text（结构化字段都为nil），走原路径
+		if body.SummaryText == nil && body.Conclusions == nil && body.Decisions == nil && body.Risks == nil && body.Blockers == nil && body.NextActions == nil && body.Evidence == nil {
+			noteText := ""
+			if body.ManualNoteText != nil {
+				noteText = *body.ManualNoteText
+			}
+			item, err := a.patchNodeMemoryManualNote(r.Context(), nodeIDFromPath(path), noteText, body.ExpectedVersion)
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, item)
+			return
+		}
+		item, err := a.patchNodeMemoryFull(r.Context(), nodeIDFromPath(path), body)
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -475,6 +489,13 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, item)
 	case strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodGet && !strings.Contains(strings.TrimPrefix(path, "/tasks/"), "/"):
 		item, err := a.getTask(r.Context(), lastSegment(path), false)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+	case strings.HasSuffix(path, "/next-node") && r.Method == http.MethodGet:
+		item, err := a.findNextNode(r.Context(), taskIDFromPath(path))
 		if err != nil {
 			writeErr(w, err)
 			return

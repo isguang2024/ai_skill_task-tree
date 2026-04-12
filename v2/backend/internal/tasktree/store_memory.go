@@ -89,6 +89,64 @@ func (a *App) patchNodeMemoryManualNote(ctx context.Context, nodeID, note string
 	return out, err
 }
 
+func (a *App) patchNodeMemoryFull(ctx context.Context, nodeID string, body memoryFullPatchBody) (jsonMap, error) {
+	var out jsonMap
+	err := a.withTx(ctx, func(txCtx context.Context) error {
+		mem, err := a.getNodeMemory(txCtx, nodeID)
+		if err != nil {
+			return err
+		}
+		if err := ensureExpectedVersion(mem, body.ExpectedVersion, "node_memory"); err != nil {
+			return err
+		}
+
+		setClauses := []string{"updated_at = ?", "version = version + 1"}
+		args := []any{utcNowISO()}
+
+		if body.SummaryText != nil {
+			setClauses = append(setClauses, "summary_text = ?")
+			args = append(args, strings.TrimSpace(*body.SummaryText))
+		}
+		if body.Conclusions != nil {
+			setClauses = append(setClauses, "conclusions_json = ?")
+			args = append(args, mustJSON(body.Conclusions))
+		}
+		if body.Decisions != nil {
+			setClauses = append(setClauses, "decisions_json = ?")
+			args = append(args, mustJSON(body.Decisions))
+		}
+		if body.Risks != nil {
+			setClauses = append(setClauses, "risks_json = ?")
+			args = append(args, mustJSON(body.Risks))
+		}
+		if body.Blockers != nil {
+			setClauses = append(setClauses, "blockers_json = ?")
+			args = append(args, mustJSON(body.Blockers))
+		}
+		if body.NextActions != nil {
+			setClauses = append(setClauses, "next_actions_json = ?")
+			args = append(args, mustJSON(body.NextActions))
+		}
+		if body.Evidence != nil {
+			setClauses = append(setClauses, "evidence_json = ?")
+			args = append(args, mustJSON(body.Evidence))
+		}
+		if body.ManualNoteText != nil {
+			setClauses = append(setClauses, "manual_note_text = ?")
+			args = append(args, strings.TrimSpace(*body.ManualNoteText))
+		}
+
+		args = append(args, nodeID)
+		query := "UPDATE node_memory_current SET " + strings.Join(setClauses, ", ") + " WHERE node_id = ?"
+		if _, err := a.execContext(txCtx, query, args...); err != nil {
+			return err
+		}
+		out, err = a.getNodeMemory(txCtx, nodeID)
+		return err
+	})
+	return out, err
+}
+
 func (a *App) patchStageMemoryManualNote(ctx context.Context, stageNodeID, note string, expectedVersion *int) (jsonMap, error) {
 	var out jsonMap
 	err := a.withTx(ctx, func(txCtx context.Context) error {
