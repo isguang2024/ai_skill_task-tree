@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+*.egg-info/
+__pycache__/
+
+# Build outputs
+dist/
+build/
+*.exe
+*.dll
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime data
+v1/backend/data/
+v2/backend/data/
+*.db
+*.sqlite
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log

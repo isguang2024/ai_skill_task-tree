@@ -1,0 +1,38 @@
+task_tree_resume - 根据 task_id 返回完整 resume 包与下一个可执行节点。
+task_tree_list_tasks - 列出任务，可按状态、关键词或项目过滤。
+task_tree_list_projects - 列出项目，可按关键词过滤。
+task_tree_get_project - 读取单个项目详情。
+task_tree_create_project - 创建项目，可指定是否为默认项目。
+task_tree_update_project - 更新项目名称、key、描述或默认项状态。
+task_tree_delete_project - 删除项目。
+task_tree_project_overview - 读取项目摘要与项目下任务列表。
+task_tree_get_task - 获取单个任务详情。
+task_tree_create_task - 创建任务；可选一次性附带初始节点树，支持多层 children，仍保留后续逐个补节点。
+task_tree_update_task - 更新任务标题、task_key 或 goal。
+task_tree_create_node - 在指定任务下创建节点。
+task_tree_list_nodes - 列出某个任务下的节点，支持筛选、排序、分页和视图模式。
+task_tree_list_nodes_summary - 轻量节点读取，仅返回高价值摘要字段。
+task_tree_focus_nodes - 聚焦读取，仅返回可执行节点及其祖先链。
+task_tree_update_node - 更新节点标题、instruction、验收标准或 estimate。
+task_tree_get_node - 获取单个节点详情。
+task_tree_progress - 上报节点进度。
+task_tree_complete - 完成节点。
+task_tree_block_node - 将节点标记为阻塞。
+task_tree_claim - 领取节点 lease。
+task_tree_release - 释放节点 lease。
+task_tree_retype_node - 把无子节点的 group 节点转回 leaf 执行节点。
+task_tree_transition_task - 批量流转任务状态，支持 pause、reopen、cancel。
+task_tree_transition_node - 流转叶子节点状态，支持 pause、reopen、cancel、unblock。
+task_tree_get_remaining - 读取任务剩余节点、阻塞数、暂停数和剩余估时。
+task_tree_get_resume_context - 读取某个节点的 resume 上下文，包括近期事件。
+task_tree_list_events - 列出任务或节点事件流。
+task_tree_list_artifacts - 列出任务或节点的产物。
+task_tree_create_artifact - 创建链接型产物记录。
+task_tree_upload_artifact - 以 base64 内容上传文件产物，便于 MCP 客户端调用。
+task_tree_delete_task - 将任务移入回收站。
+task_tree_restore_task - 恢复回收站中的任务。
+task_tree_hard_delete_task - 彻底删除已进入回收站的任务。
+task_tree_empty_trash - 清空回收站。
+task_tree_sweep_leases - 清理过期 lease。
+task_tree_search - 搜索任务和节点。
+task_tree_work_items - 获取当前可执行 work items。

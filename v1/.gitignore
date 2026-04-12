@@ -1,0 +1,20 @@
+# Local runtime data
+backend/data/
+
+# Local environment files
+backend/ai.env.txt
+.claude/
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+
+# Generated / temporary files
+*.exe
+*.log
+*~
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+.venv/

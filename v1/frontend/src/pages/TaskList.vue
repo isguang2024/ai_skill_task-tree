@@ -1,0 +1,452 @@
+<template>
+  <n-spin :show="loading">
+
+    <!-- Project view -->
+    <template v-if="!selectedProject">
+      <!-- Filter bar -->
+      <n-card size="small" style="margin-bottom:12px;">
+        <n-space align="center" justify="space-between">
+          <n-space align="center">
+          <n-input v-model:value="searchQuery" placeholder="搜索项目" clearable style="width:220px;"
+            @update:value="debouncedLoad" />
+          <n-tag type="info" size="small">{{ projects.length }} 个项目</n-tag>
+          </n-space>
+          <n-space align="center" :size="4">
+            <n-button size="small" type="primary" @click="openCreateProject">新建项目</n-button>
+          </n-space>
+        </n-space>
+      </n-card>
+
+      <n-empty v-if="!loading && projects.length===0" description="暂无项目" style="padding:60px 0;" />
+
+      <n-grid :cols="3" :x-gap="12" :y-gap="12">
+        <n-gi v-for="proj in projects" :key="proj.id">
+          <n-card hoverable size="small" style="cursor:pointer;height:100%;" @click="openProject(proj)">
+            <template #header>
+              <n-space align="center" :size="6">
+                <span style="font-size:18px;">📁</span>
+                <n-tag v-if="proj.project_key" size="small">{{ proj.project_key }}</n-tag>
+                <n-tag v-if="proj.is_default" size="small" type="info">默认</n-tag>
+              </n-space>
+            </template>
+            <template #header-extra>
+              <n-space :size="4" @click.stop>
+                <n-button size="tiny" quaternary @click.stop="startEdit(proj)">编辑</n-button>
+                <n-button size="tiny" quaternary type="error" @click.stop="deleteProject(proj)">删除</n-button>
+                <n-text depth="3" style="font-size:11px;">{{ shortTime(proj.updated_at) }}</n-text>
+              </n-space>
+            </template>
+            <div style="font-size:15px;font-weight:600;margin-bottom:4px;">{{ proj.name }}</div>
+            <n-text v-if="proj.description" depth="3" style="font-size:12px;display:block;margin-bottom:8px;">
+              {{ excerpt(proj.description, 80) }}
+            </n-text>
+            <!-- Mini stats from overview -->
+            <n-space v-if="proj._summary" :size="4" wrap>
+              <n-tag size="small" round>总 {{ proj._summary.total }}</n-tag>
+              <n-tag v-if="proj._summary.running > 0" type="success" size="small" round>运行 {{ proj._summary.running }}</n-tag>
+              <n-tag v-if="proj._summary.blocked > 0" type="error" size="small" round>阻塞 {{ proj._summary.blocked }}</n-tag>
+              <n-tag v-if="proj._summary.paused > 0" type="warning" size="small" round>暂停 {{ proj._summary.paused }}</n-tag>
+              <n-tag v-if="proj._summary.done > 0" size="small" round>完成 {{ proj._summary.done }}</n-tag>
+            </n-space>
+          </n-card>
+        </n-gi>
+      </n-grid>
+
+      <!-- Edit Project Modal -->
+      <n-modal v-model:show="showEdit" preset="card" title="编辑项目" style="max-width:480px;" @click.stop>
+        <n-form label-placement="top">
+          <n-form-item label="项目名称">
+            <n-input v-model:value="editForm.name" placeholder="项目名称" />
+          </n-form-item>
+          <n-form-item label="项目 Key">
+            <n-input v-model:value="editForm.project_key" placeholder="例如：PROJ" />
+          </n-form-item>
+          <n-form-item label="描述">
+            <n-input v-model:value="editForm.description" type="textarea" :rows="3" placeholder="项目描述" />
+          </n-form-item>
+        </n-form>
+        <template #action>
+          <n-button @click="showEdit=false">取消</n-button>
+          <n-button type="primary" :loading="saving" @click="saveEdit">保存</n-button>
+        </template>
+      </n-modal>
+
+      <!-- Create Project Modal -->
+      <n-modal v-model:show="showCreate" preset="card" title="新建项目" style="max-width:480px;" @click.stop>
+        <n-form label-placement="top">
+          <n-form-item label="项目名称" required>
+            <n-input v-model:value="createForm.name" placeholder="例如：AI 任务重构" />
+          </n-form-item>
+          <n-form-item label="项目 Key">
+            <n-input v-model:value="createForm.project_key" placeholder="例如：REFACTOR" />
+          </n-form-item>
+          <n-form-item label="描述">
+            <n-input v-model:value="createForm.description" type="textarea" :rows="3" placeholder="项目描述" />
+          </n-form-item>
+          <n-form-item label="默认项目">
+            <n-switch v-model:value="createForm.is_default" />
+          </n-form-item>
+        </n-form>
+        <template #action>
+          <n-button @click="showCreate=false">取消</n-button>
+          <n-button type="primary" :loading="creating" @click="saveCreate">创建</n-button>
+        </template>
+      </n-modal>
+    </template>
+
+    <!-- Tasks inside a project -->
+    <template v-else>
+      <!-- Header with back -->
+      <n-card size="small" style="margin-bottom:12px;">
+        <n-space align="center" justify="space-between">
+          <n-space align="center" :size="8">
+            <n-button size="small" quaternary @click="closeProject">← 返回项目</n-button>
+            <n-divider vertical />
+            <span style="font-size:16px;">📁</span>
+            <n-text strong>{{ selectedProject.name }}</n-text>
+            <n-tag v-if="selectedProject.project_key" size="small">{{ selectedProject.project_key }}</n-tag>
+          </n-space>
+          <n-space align="center" :size="6">
+            <n-input v-model:value="searchQuery" placeholder="搜索任务" clearable style="width:180px;"
+              @update:value="debouncedLoadTasks" />
+            <n-select v-model:value="statusFilter" :options="statusOpts" style="width:130px;"
+              @update:value="loadProjectTasks" clearable placeholder="全部状态" />
+          </n-space>
+        </n-space>
+      </n-card>
+
+      <!-- Summary stats -->
+      <n-grid v-if="summary" :cols="8" :x-gap="8" :y-gap="8" style="margin-bottom:12px;">
+        <n-gi v-for="s in summaryItems" :key="s.label">
+          <n-card size="small">
+            <n-statistic :label="s.label" :value="s.value" />
+          </n-card>
+        </n-gi>
+      </n-grid>
+
+      <n-empty v-if="!loading && tasks.length===0" description="暂无任务" style="padding:40px 0;" />
+
+      <!-- Task grid 3 per row -->
+      <n-grid :cols="3" :x-gap="12" :y-gap="12">
+        <n-gi v-for="task in tasks" :key="task.id">
+          <n-card hoverable size="small" @click="goTask(task)" style="cursor:pointer;height:100%;">
+            <template #header>
+              <n-space align="center" :size="6">
+                <n-tag :type="statusType(task.status)" size="small" :bordered="false">{{ stateLabel(task.status, task.result) }}</n-tag>
+                <n-tag size="small">{{ task.task_key || task.id.substring(0,8) }}</n-tag>
+                <n-tag type="info" size="small">{{ pct(task.summary_percent) }}%</n-tag>
+              </n-space>
+            </template>
+            <template #header-extra>
+              <n-text depth="3" style="font-size:11px;">{{ shortTime(task.updated_at) }}</n-text>
+            </template>
+            <div style="font-size:14px;font-weight:600;margin-bottom:4px;">{{ task.title }}</div>
+            <n-text v-if="task.goal" depth="3" style="font-size:12px;display:block;margin-bottom:8px;">
+              {{ excerpt(task.goal, 100) }}
+            </n-text>
+            <n-progress :percentage="pct(task.summary_percent)" :show-indicator="false" :height="5"
+              :border-radius="3" style="margin-bottom:6px;" />
+            <n-space justify="space-between" align="center">
+              <n-space :size="4">
+                <n-tag size="small" round>剩余 {{ task._remaining || 0 }}</n-tag>
+                <n-tag v-if="task._blocked > 0" type="error" size="small" round>阻塞 {{ task._blocked }}</n-tag>
+                <n-tag v-if="task._paused > 0" type="warning" size="small" round>暂停 {{ task._paused }}</n-tag>
+              </n-space>
+            </n-space>
+            <div v-if="task._nextTitle" style="font-size:11px;color:var(--n-text-color-3);margin-top:4px;">
+              下一步: <strong>{{ task._nextPath }}</strong> {{ task._nextTitle }}
+            </div>
+          </n-card>
+        </n-gi>
+      </n-grid>
+    </template>
+
+  </n-spin>
+</template>
+
+<script setup>
+import { ref, computed, onMounted, onActivated, onDeactivated, onUnmounted, watch, inject } from 'vue'
+import { useRouter } from 'vue-router'
+import { api, statusType, stateLabel, pct, shortTime, excerpt } from '../api.js'
+
+const props = defineProps({ projectId: String })
+const router = useRouter()
+const breadcrumb = inject('breadcrumb', ref([]))
+
+// Project view state
+const projects = ref([])
+const selectedProject = ref(null)
+
+// Task view state
+const tasks = ref([])
+const summary = ref(null)
+const loading = ref(true)
+const searchQuery = ref('')
+const statusFilter = ref(null)
+
+const statusOpts = [
+  { label: '就绪', value: 'ready' },
+  { label: '进行中', value: 'running' },
+  { label: '阻塞', value: 'blocked' },
+  { label: '暂停', value: 'paused' },
+  { label: '完成', value: 'done' },
+  { label: '已取消', value: 'canceled' },
+  { label: '已关闭', value: 'closed' },
+]
+
+const summaryItems = computed(() => {
+  if (!summary.value) return []
+  const s = summary.value
+  return [
+    { label: '总数', value: s.total },
+    { label: '就绪', value: s.ready },
+    { label: '进行中', value: s.running },
+    { label: '阻塞', value: s.blocked },
+    { label: '暂停', value: s.paused },
+    { label: '完成', value: s.done },
+    { label: '取消', value: s.canceled },
+    { label: '关闭', value: s.closed },
+  ]
+})
+
+// Load all projects with mini stats
+async function loadProjects() {
+  loading.value = true
+  searchQuery.value = ''
+  breadcrumb.value = [{ label: '任务总览', path: '/' }]
+  try {
+    const q = new URLSearchParams()
+    if (searchQuery.value) q.set('q', searchQuery.value)
+    const list = await api('/projects?' + q)
+    // Fetch overview for each project in parallel
+    await Promise.all(list.map(async proj => {
+      try {
+        const ov = await api('/projects/' + proj.id + '/overview')
+        proj._summary = ov.summary || null
+      } catch { proj._summary = null }
+    }))
+    projects.value = list
+  } catch (e) {
+    window.$message?.error('加载项目失败: ' + e.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+let debounceTimer = null
+function debouncedLoad() {
+  clearTimeout(debounceTimer)
+  debounceTimer = setTimeout(loadProjects, 300)
+}
+function debouncedLoadTasks() {
+  clearTimeout(debounceTimer)
+  debounceTimer = setTimeout(loadProjectTasks, 300)
+}
+
+async function openProject(proj) {
+  selectedProject.value = proj
+  searchQuery.value = ''
+  statusFilter.value = null
+  router.push('/projects/' + proj.id)
+  // loadProjectTasks will be triggered by watcher on projectId prop
+}
+
+function closeProject() {
+  selectedProject.value = null
+  searchQuery.value = ''
+  statusFilter.value = null
+  router.push('/')
+}
+
+async function loadProjectTasks() {
+  if (!selectedProject.value) return
+  loading.value = true
+  try {
+    const params = new URLSearchParams()
+    if (statusFilter.value) params.set('status', statusFilter.value)
+    if (searchQuery.value) params.set('q', searchQuery.value)
+    params.set('limit', '80')
+    const list = await api('/projects/' + selectedProject.value.id + '/tasks?' + params)
+    const sm = { total: list.length, ready: 0, running: 0, blocked: 0, paused: 0, done: 0, canceled: 0, closed: 0 }
+    for (const t of list) {
+      const st = (t.status || '').toLowerCase()
+      if (sm[st] !== undefined) sm[st]++
+    }
+    // Load remaining + resume in parallel
+    await Promise.all(list.map(async t => {
+      try {
+        const rem = await api('/tasks/' + t.id + '/remaining')
+        t._remaining = rem.remaining_nodes || 0
+        t._blocked = rem.blocked_nodes || 0
+        t._paused = rem.paused_nodes || 0
+      } catch { t._remaining = 0; t._blocked = 0; t._paused = 0 }
+      try {
+        const res = await api('/tasks/' + t.id + '/resume')
+        if (res.next_node?.node) {
+          t._nextPath = res.next_node.node.path || ''
+          t._nextTitle = res.next_node.node.title || ''
+        }
+      } catch {}
+    }))
+    tasks.value = list
+    summary.value = sm
+    breadcrumb.value = [
+      { label: '任务总览', path: '/' },
+      { label: selectedProject.value.name },
+    ]
+  } catch (e) {
+    window.$message?.error('加载任务失败: ' + e.message)
+  } finally {
+    loading.value = false
+  }
+}
+
+function goTask(task) {
+  router.push({
+    path: '/tasks/' + task.id,
+    state: {
+      projectId: selectedProject.value?.id,
+      projectName: selectedProject.value?.name,
+      backPath: selectedProject.value?.id ? '/projects/' + selectedProject.value.id : '/',
+    },
+  })
+}
+
+// Edit / Delete project
+const showEdit = ref(false)
+const showCreate = ref(false)
+const saving = ref(false)
+const creating = ref(false)
+const editTarget = ref(null)
+const editForm = ref({ name: '', project_key: '', description: '' })
+const createForm = ref({ name: '', project_key: '', description: '', is_default: false })
+
+function openCreateProject() {
+  createForm.value = { name: '', project_key: '', description: '', is_default: false }
+  showCreate.value = true
+}
+
+function startEdit(proj) {
+  editTarget.value = proj
+  editForm.value = { name: proj.name || '', project_key: proj.project_key || '', description: proj.description || '' }
+  showEdit.value = true
+}
+
+async function saveEdit() {
+  if (!editTarget.value || !editForm.value.name.trim()) return
+  saving.value = true
+  try {
+    await api('/projects/' + editTarget.value.id, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: editForm.value.name, project_key: editForm.value.project_key || null, description: editForm.value.description || null }),
+    })
+    showEdit.value = false
+    window.$message?.success('已保存')
+    loadProjects()
+  } catch (e) {
+    window.$message?.error('保存失败: ' + e.message)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function saveCreate() {
+  if (!createForm.value.name.trim()) return
+  creating.value = true
+  try {
+    await api('/projects', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: createForm.value.name,
+        project_key: createForm.value.project_key || null,
+        description: createForm.value.description || null,
+        is_default: createForm.value.is_default,
+      }),
+    })
+    showCreate.value = false
+    window.$message?.success('项目已创建')
+    loadProjects()
+  } catch (e) {
+    window.$message?.error('创建失败: ' + e.message)
+  } finally {
+    creating.value = false
+  }
+}
+
+function deleteProject(proj) {
+  const total = proj._summary?.total || 0
+  const hasTask = total > 0
+  window.$dialog?.error({
+    title: '删除项目',
+    content: hasTask
+      ? `项目「${proj.name}」包含 ${total} 个任务，删除后这些任务将全部移入回收站，可从回收站恢复。确定继续？`
+      : `确定删除项目「${proj.name}」？`,
+    positiveText: '确认删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await api('/projects/' + proj.id, { method: 'DELETE' })
+        window.$message?.success('已删除')
+        loadProjects()
+      } catch (e) {
+        window.$message?.error('删除失败: ' + e.message)
+      }
+    },
+  })
+}
+
+// Light background refresh for task status/percent
+let refreshTimer = null
+async function lightRefresh() {
+  if (loading.value || !selectedProject.value) return
+  try {
+    const ov = await api('/projects/' + selectedProject.value.id + '/overview')
+    if (!ov.tasks) return
+    tasks.value = tasks.value.map(t => {
+      const fresh = ov.tasks.find(f => f.id === t.id)
+      return fresh ? { ...t, ...fresh } : t
+    })
+    if (ov.summary) summary.value = ov.summary
+  } catch {}
+}
+
+function startAutoRefresh() {
+  stopAutoRefresh()
+  refreshTimer = setInterval(lightRefresh, 8000)
+}
+function stopAutoRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+}
+
+async function initByProp() {
+  if (props.projectId) {
+    try {
+      loading.value = true
+      // Find project in already-loaded list, else fetch full list
+      let proj = projects.value.find(p => p.id === props.projectId)
+      if (!proj) {
+        const list = await api('/projects')
+        projects.value = list
+        proj = list.find(p => p.id === props.projectId)
+      }
+      if (!proj) { router.replace('/'); return }
+      selectedProject.value = proj
+      searchQuery.value = ''
+      statusFilter.value = null
+      await loadProjectTasks()
+    } catch {
+      router.replace('/')
+    }
+  } else {
+    selectedProject.value = null
+    loadProjects()
+  }
+}
+
+watch(() => props.projectId, initByProp)
+
+onMounted(() => { initByProp(); startAutoRefresh() })
+onActivated(() => { initByProp(); startAutoRefresh() })
+onDeactivated(stopAutoRefresh)
+onUnmounted(stopAutoRefresh)
+</script>
