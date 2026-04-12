@@ -15,6 +15,7 @@ type taskCreate struct {
 	SourceSessionID *string        `json:"source_session_id"`
 	Tags            []string       `json:"tags"`
 	Nodes           []taskNodeSeed `json:"nodes"`
+	Stages          []stageCreate  `json:"stages"`
 	Metadata        map[string]any `json:"metadata"`
 	CreatedByType   *string        `json:"created_by_type"`
 	CreatedByID     *string        `json:"created_by_id"`
@@ -54,6 +55,7 @@ type nodeCreate struct {
 	Title              string         `json:"title"`
 	Instruction        *string        `json:"instruction"`
 	AcceptanceCriteria []string       `json:"acceptance_criteria"`
+	DependsOn          []string       `json:"depends_on"`
 	Estimate           *float64       `json:"estimate"`
 	Status             *string        `json:"status"`
 	SortOrder          *int           `json:"sort_order"`
@@ -109,6 +111,7 @@ type nodeUpdate struct {
 	Title              *string   `json:"title"`
 	Instruction        *string   `json:"instruction"`
 	AcceptanceCriteria *[]string `json:"acceptance_criteria"`
+	DependsOn          *[]string `json:"depends_on"`
 	Estimate           *float64  `json:"estimate"`
 	SortOrder          *int      `json:"sort_order"`
 	ExpectedVersion    *int      `json:"expected_version"`
@@ -127,16 +130,26 @@ type progressBody struct {
 	DeltaProgress   *float64 `json:"delta_progress"`
 	Progress        *float64 `json:"progress"`
 	Message         *string  `json:"message"`
+	LogContent      *string  `json:"log_content"`
 	Actor           *actor   `json:"actor"`
 	IdempotencyKey  *string  `json:"idempotency_key"`
 	ExpectedVersion *int     `json:"expected_version"`
 }
 
 type completeBody struct {
-	Message         *string `json:"message"`
-	Actor           *actor  `json:"actor"`
-	IdempotencyKey  *string `json:"idempotency_key"`
-	ExpectedVersion *int    `json:"expected_version"`
+	Message         *string              `json:"message"`
+	Actor           *actor               `json:"actor"`
+	IdempotencyKey  *string              `json:"idempotency_key"`
+	ExpectedVersion *int                 `json:"expected_version"`
+	Memory          *memoryFullPatchBody `json:"memory"`
+}
+
+type claimStartBody struct {
+	Actor        actor          `json:"actor"`
+	LeaseSeconds *int           `json:"lease_seconds"`
+	InputSummary *string        `json:"input_summary"`
+	TriggerKind  *string        `json:"trigger_kind"`
+	Metadata     map[string]any `json:"metadata"`
 }
 
 type blockBody struct {
@@ -182,15 +195,17 @@ type memoryPatchBody struct {
 }
 
 type memoryFullPatchBody struct {
-	SummaryText    *string  `json:"summary_text"`
-	Conclusions    []string `json:"conclusions"`
-	Decisions      []string `json:"decisions"`
-	Risks          []string `json:"risks"`
-	Blockers       []string `json:"blockers"`
-	NextActions    []string `json:"next_actions"`
-	Evidence       []string `json:"evidence"`
-	ManualNoteText *string  `json:"manual_note_text"`
-	ExpectedVersion *int    `json:"expected_version"`
+	SummaryText        *string  `json:"summary_text"`
+	Conclusions        []string `json:"conclusions"`
+	Decisions          []string `json:"decisions"`
+	Risks              []string `json:"risks"`
+	Blockers           []string `json:"blockers"`
+	NextActions        []string `json:"next_actions"`
+	Evidence           []string `json:"evidence"`
+	ExecutionLog       *string  `json:"execution_log"`
+	AppendExecutionLog *string  `json:"append_execution_log"`
+	ManualNoteText     *string  `json:"manual_note_text"`
+	ExpectedVersion    *int     `json:"expected_version"`
 }
 
 type transitionBody struct {

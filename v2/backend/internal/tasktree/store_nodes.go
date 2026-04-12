@@ -47,7 +47,9 @@ func (a *App) listNodesWithOptions(ctx context.Context, taskID string, opts node
 	opts = normalizeNodeListOptions(opts)
 
 	selectFields := `n.*, EXISTS(SELECT 1 FROM nodes c WHERE c.parent_node_id = n.id AND c.deleted_at IS NULL) AS has_children`
-	if opts.ViewMode == "summary" || opts.ViewMode == "events" {
+	if opts.ViewMode == "slim" {
+		selectFields = `n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.depth, n.sort_order, n.created_at`
+	} else if opts.ViewMode == "summary" || opts.ViewMode == "events" {
 		selectFields = `n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.progress, n.estimate, n.created_at, n.updated_at, EXISTS(SELECT 1 FROM nodes c WHERE c.parent_node_id = n.id AND c.deleted_at IS NULL) AS has_children`
 	}
 	query := `SELECT ` + selectFields + ` FROM nodes n WHERE n.task_id = ?`
@@ -176,6 +178,14 @@ func (a *App) listNodesWithOptions(ctx context.Context, taskID string, opts node
 			cursorValue = asString(last["path"])
 		}
 		nextCursor = cursorValue + "|" + asString(last["id"])
+	}
+
+	if opts.ViewMode == "slim" {
+		slimItems := make([]jsonMap, 0, len(items))
+		for _, item := range items {
+			slimItems = append(slimItems, buildNodeSlim(item))
+		}
+		return jsonMap{"items": slimItems, "has_more": hasMore, "next_cursor": nextCursor}, nil
 	}
 
 	if opts.ViewMode == "summary" {
@@ -315,18 +325,29 @@ func buildNodeSummary(item jsonMap) jsonMap {
 		nextAction = "drilldown"
 	}
 	return jsonMap{
-		"id":             item["id"],
-		"task_id":        item["task_id"],
-		"parent_node_id": item["parent_node_id"],
-		"path":           item["path"],
-		"title":          item["title"],
-		"kind":           item["kind"],
-		"status":         item["status"],
-		"progress":       item["progress"],
-		"estimate":       item["estimate"],
-		"updated_at":     item["updated_at"],
-		"has_children":   hasChildren,
-		"next_action":    nextAction,
+		"id":              item["id"],
+		"task_id":         item["task_id"],
+		"parent_node_id":  item["parent_node_id"],
+		"path":            item["path"],
+		"title":           item["title"],
+		"kind":            item["kind"],
+		"status":          item["status"],
+		"progress":        item["progress"],
+		"estimate":        item["estimate"],
+		"depends_on_json": item["depends_on_json"],
+		"updated_at":      item["updated_at"],
+		"has_children":    hasChildren,
+		"next_action":     nextAction,
+	}
+}
+
+func buildNodeSlim(item jsonMap) jsonMap {
+	return jsonMap{
+		"id":     item["id"],
+		"path":   item["path"],
+		"title":  item["title"],
+		"kind":   item["kind"],
+		"status": item["status"],
 	}
 }
 
@@ -338,7 +359,7 @@ func normalizeNodeListOptions(opts nodeListOptions) nodeListOptions {
 		opts.Limit = 500
 	}
 	switch opts.ViewMode {
-	case "summary", "detail", "events":
+	case "summary", "detail", "events", "slim":
 	default:
 		opts.ViewMode = "summary"
 	}
@@ -581,9 +602,13 @@ func (a *App) createNode(ctx context.Context, taskID string, body nodeCreate) (j
 		}
 		nodeID := newID("nd")
 		now := utcNowISO()
-		if _, err := a.execContext(txCtx, `INSERT INTO nodes(id, task_id, parent_node_id, node_key, path, depth, kind, role, stage_node_id, title, instruction, acceptance_criteria_json, status, estimate, sort_order, metadata_json, created_by_type, created_by_id, creation_reason, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			nodeID, taskID, nullable(parentID), nodeKey, path, depth, kind, role, nullable(stageNodeID), body.Title, body.Instruction, mustJSON(defaultCriteria(body.AcceptanceCriteria)), status, estimate, sortOrder, mustJSON(body.Metadata), createdByType, body.CreatedByID, body.CreationReason, now, now); err != nil {
+		dependsOnJSON := mustJSON(body.DependsOn)
+		if body.DependsOn == nil {
+			dependsOnJSON = "[]"
+		}
+		if _, err := a.execContext(txCtx, `INSERT INTO nodes(id, task_id, parent_node_id, node_key, path, depth, kind, role, stage_node_id, title, instruction, acceptance_criteria_json, depends_on_json, status, estimate, sort_order, metadata_json, created_by_type, created_by_id, creation_reason, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			nodeID, taskID, nullable(parentID), nodeKey, path, depth, kind, role, nullable(stageNodeID), body.Title, body.Instruction, mustJSON(defaultCriteria(body.AcceptanceCriteria)), dependsOnJSON, status, estimate, sortOrder, mustJSON(body.Metadata), createdByType, body.CreatedByID, body.CreationReason, now, now); err != nil {
 			return err
 		}
 		if err := a.insertEvent(txCtx, taskID, &nodeID, "node_created", &body.Title, map[string]any{"path": path, "kind": kind, "role": role, "stage_node_id": nullable(stageNodeID)}, nil, nil); err != nil {
@@ -600,10 +625,47 @@ func (a *App) createNode(ctx context.Context, taskID string, body nodeCreate) (j
 		createdNode, err = a.findNode(txCtx, nodeID, false)
 		return err
 	})
+	if err == nil && createdNode != nil {
+		a.indexNode(ctx, createdNode)
+	}
 	if err != nil {
 		return nil, err
 	}
 	return createdNode, nil
+}
+
+func (a *App) batchCreateNodes(ctx context.Context, taskID string, bodies []nodeCreate) ([]jsonMap, error) {
+	results := make([]jsonMap, 0, len(bodies))
+	for _, body := range bodies {
+		node, err := a.createNode(ctx, taskID, body)
+		if err != nil {
+			return results, fmt.Errorf("batch create failed at node %q: %w", body.Title, err)
+		}
+		results = append(results, node)
+	}
+	return results, nil
+}
+
+func (a *App) claimAndStartRun(ctx context.Context, nodeID string, body claimStartBody) (jsonMap, error) {
+	claimedNode, err := a.claimNode(ctx, nodeID, claimBody{
+		Actor:        body.Actor,
+		LeaseSeconds: body.LeaseSeconds,
+	})
+	if err != nil {
+		return nil, err
+	}
+	run, err := a.startRun(ctx, nodeID, runStart{
+		Actor:        &body.Actor,
+		TriggerKind:  body.TriggerKind,
+		InputSummary: body.InputSummary,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return jsonMap{
+		"node": claimedNode,
+		"run":  run,
+	}, nil
 }
 
 func (a *App) retypeNodeToLeaf(ctx context.Context, nodeID string, body retypeBody) (jsonMap, error) {
@@ -754,9 +816,13 @@ func (a *App) reportProgress(ctx context.Context, nodeID string, body progressBo
 			return err
 		}
 		if runID != "" {
+			logContent := body.Message
+			if body.LogContent != nil {
+				logContent = body.LogContent
+			}
 			if _, err := a.addRunLog(txCtx, runID, runLogCreate{
 				Kind:    "progress",
-				Content: body.Message,
+				Content: logContent,
 				Payload: map[string]any{"progress": progress},
 			}); err != nil {
 				return err
@@ -859,6 +925,16 @@ func (a *App) completeNode(ctx context.Context, nodeID string, body completeBody
 		}); err != nil {
 			return err
 		}
+		// Auto-finish any other dangling runs for this node
+		if _, err := a.execContext(txCtx, `UPDATE node_runs SET status = 'finished', result = 'done', finished_at = ?, updated_at = ? WHERE node_id = ? AND status = 'running' AND id != ?`, utcNowISO(), utcNowISO(), nodeID, runID); err != nil {
+			return err
+		}
+		// Inline memory patch if provided
+		if body.Memory != nil {
+			if _, pErr := a.patchNodeMemoryFull(txCtx, nodeID, *body.Memory); pErr != nil {
+				return pErr
+			}
+		}
 		if err := a.rollupTask(txCtx, asString(node["task_id"])); err != nil {
 			return err
 		}
@@ -870,6 +946,13 @@ func (a *App) completeNode(ctx context.Context, nodeID string, body completeBody
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Auto-attach next node info
+	taskID := asString(updatedNode["task_id"])
+	if taskID != "" {
+		if nextInfo, nErr := a.findNextNode(ctx, taskID); nErr == nil {
+			updatedNode["next"] = nextInfo
+		}
 	}
 	return updatedNode, nil
 }

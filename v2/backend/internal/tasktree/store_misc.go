@@ -84,6 +84,11 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 	if err != nil {
 		return nil, err
 	}
+	// Fetch node memory (includes execution_log)
+	memory, _ := a.getNodeMemory(ctx, nodeID)
+	// Fetch recent runs
+	runs, _ := a.listNodeRuns(ctx, nodeID, 5)
+
 	return jsonMap{
 		"task": jsonMap{
 			"id":              task["id"],
@@ -106,6 +111,7 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 			"title":               node["title"],
 			"instruction":         node["instruction"],
 			"acceptance_criteria": node["acceptance_criteria"],
+			"depends_on_json":     node["depends_on_json"],
 			"status":              node["status"],
 			"result":              node["result"],
 			"progress":            node["progress"],
@@ -113,6 +119,8 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 			"kind":                node["kind"],
 			"version":             node["version"],
 		},
+		"memory":        memory,
+		"recent_runs":   runs,
 		"siblings":      siblings,
 		"ancestors":     ancestors,
 		"recent_events": recentEvents,

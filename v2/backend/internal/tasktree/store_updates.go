@@ -79,6 +79,9 @@ func (a *App) updateTask(ctx context.Context, taskID string, body taskUpdate) (j
 		updatedNode, err = a.getTask(txCtx, taskID, false)
 		return err
 	})
+	if err == nil && updatedNode != nil {
+		a.indexTask(ctx, updatedNode)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +133,11 @@ func (a *App) updateNode(ctx context.Context, nodeID string, body nodeUpdate) (j
 			args = append(args, *body.SortOrder)
 			fields = append(fields, "sort_order")
 		}
+		if body.DependsOn != nil {
+			updates = append(updates, "depends_on_json = ?")
+			args = append(args, mustJSON(*body.DependsOn))
+			fields = append(fields, "depends_on")
+		}
 		if len(updates) == 0 {
 			updatedNode = node
 			return nil
@@ -153,6 +161,9 @@ func (a *App) updateNode(ctx context.Context, nodeID string, body nodeUpdate) (j
 		updatedNode, err = a.findNode(txCtx, nodeID, false)
 		return err
 	})
+	if err == nil && updatedNode != nil {
+		a.indexNode(ctx, updatedNode)
+	}
 	if err != nil {
 		return nil, err
 	}

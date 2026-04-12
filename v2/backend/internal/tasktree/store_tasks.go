@@ -39,6 +39,11 @@ func (a *App) createTask(ctx context.Context, body taskCreate) (jsonMap, error) 
 		if err := a.insertEvent(txCtx, taskID, nil, "task_created", &body.Title, nil, &actor{Tool: body.SourceTool, AgentID: body.CreatedByID}, nil); err != nil {
 			return err
 		}
+		for _, stage := range body.Stages {
+			if _, err := a.createStage(txCtx, taskID, stage); err != nil {
+				return err
+			}
+		}
 		for _, seed := range body.Nodes {
 			if _, err := a.createTaskSeedNode(txCtx, taskID, nil, seed); err != nil {
 				return err
@@ -47,6 +52,9 @@ func (a *App) createTask(ctx context.Context, body taskCreate) (jsonMap, error) 
 		out, err = a.getTask(txCtx, taskID, false)
 		return err
 	})
+	if err == nil && out != nil {
+		a.indexTask(ctx, out)
+	}
 	return out, err
 }
 
@@ -314,4 +322,27 @@ func (a *App) emptyTrash(ctx context.Context) (jsonMap, error) {
 		return nil
 	})
 	return out, err
+}
+
+func (a *App) wrapupTask(ctx context.Context, taskID string, summary string) (jsonMap, error) {
+	if _, err := a.getTask(ctx, taskID, false); err != nil {
+		return nil, err
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return nil, &appError{Code: 400, Msg: "summary 不能为空"}
+	}
+	if _, err := a.execContext(ctx, `UPDATE tasks SET wrapup_summary = ?, updated_at = ?, version = version + 1 WHERE id = ?`, summary, utcNowISO(), taskID); err != nil {
+		return nil, err
+	}
+	return jsonMap{"task_id": taskID, "wrapup_summary": summary, "status": "saved"}, nil
+}
+
+func (a *App) getWrapup(ctx context.Context, taskID string) (jsonMap, error) {
+	task, err := a.getTask(ctx, taskID, false)
+	if err != nil {
+		return nil, err
+	}
+	summary, _ := task["wrapup_summary"].(string)
+	return jsonMap{"task_id": taskID, "title": task["title"], "wrapup_summary": summary}, nil
 }

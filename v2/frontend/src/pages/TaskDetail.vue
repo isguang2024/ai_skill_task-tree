@@ -137,18 +137,18 @@
               <n-button size="tiny" quaternary @click="collapseAll">全部折叠</n-button>
             </n-space>
             <!-- Tree -->
-            <n-scrollbar style="max-height:calc(100vh - 380px);">
+            <div style="max-height:calc(100vh - 380px);">
               <n-tree :data="filteredTreeData" :selected-keys="selectedNodeId ? [selectedNodeId] : []"
                 :expanded-keys="expandedKeys" :pattern="treeSearch" :show-irrelevant-nodes="false"
                 :render-label="renderTreeLabel" :render-prefix="renderTreePrefix" :render-suffix="renderTreeSuffix"
-                :node-props="nodeProps" block-line
+                :node-props="nodeProps" block-line virtual-scroll style="height:calc(100vh - 380px);"
                 @update:selected-keys="onTreeSelect" @update:expanded-keys="k=>expandedKeys=k" />
               <n-empty v-if="treeData.length===0" description="还没有节点" size="small">
                 <template #extra>
                   <n-button size="tiny" type="primary" @click="openNodeCreate('')">新增根节点</n-button>
                 </template>
               </n-empty>
-            </n-scrollbar>
+            </div>
           </n-card>
         </n-gi>
 
@@ -227,6 +227,16 @@
                         </n-list-item>
                       </n-list>
                     </n-collapse-item>
+                    <n-collapse-item v-if="parsedDependsOn.length" title="前置依赖" name="depends">
+                      <n-list size="small" bordered>
+                        <n-list-item v-for="depId in parsedDependsOn" :key="depId">
+                          <n-space align="center" :size="8">
+                            <n-tag :type="depNodeStatus(depId)==='done'?'success':depNodeStatus(depId)==='canceled'?'default':'warning'" size="small">{{ depNodeStatus(depId) }}</n-tag>
+                            <n-text style="font-size:12px;cursor:pointer;" @click="selectNode(depId)">{{ depNodeTitle(depId) || depId }}</n-text>
+                          </n-space>
+                        </n-list-item>
+                      </n-list>
+                    </n-collapse-item>
                     <n-collapse-item title="节点信息" name="info">
                       <n-descriptions :column="2" label-placement="top" bordered size="small">
                         <n-descriptions-item label="节点 ID">
@@ -247,6 +257,11 @@
                     <n-gi>
                       <n-card size="small" title="节点摘要">
                         <div style="font-size:12px;line-height:1.7;white-space:pre-wrap;">{{ selectedMemoryText || '暂无节点摘要' }}</div>
+                        <n-collapse v-if="selectedNodeMemory?.execution_log" style="margin-top:8px;">
+                          <n-collapse-item title="执行过程" name="exec_log">
+                            <div style="font-size:11px;line-height:1.6;white-space:pre-wrap;max-height:300px;overflow-y:auto;padding:6px;background:var(--n-color-modal);border-radius:4px;">{{ selectedNodeMemory.execution_log }}</div>
+                          </n-collapse-item>
+                        </n-collapse>
                       </n-card>
                     </n-gi>
                     <n-gi>
@@ -369,6 +384,9 @@
                       <n-form-item label="验收标准（一行一条）">
                         <n-input v-model:value="editForm.acceptance" type="textarea" :rows="3" />
                       </n-form-item>
+                      <n-form-item label="前置依赖（节点 ID，一行一个）">
+                        <n-input v-model:value="editForm.depends_on" type="textarea" :rows="2" placeholder="粘贴依赖节点的 ID，每行一个" />
+                      </n-form-item>
                       <n-button type="primary" size="small" :loading="submitting" @click="saveNode">保存节点</n-button>
                     </n-form>
                   </n-collapse-item>
@@ -472,6 +490,10 @@
                 <n-collapse-item title="节点 Memory" name="node">
                   <template v-if="selectedNode">
                     <div v-if="nodeMemorySummary" class="memory-summary">{{ nodeMemorySummary }}</div>
+                    <div v-if="selectedNodeMemory?.execution_log" class="memory-execution-log">
+                      <n-text depth="3" class="memory-section-title">执行过程</n-text>
+                      <div class="execution-log-content">{{ selectedNodeMemory.execution_log }}</div>
+                    </div>
                     <div v-if="nodeMemorySections.length" class="memory-sections">
                       <div v-for="section in nodeMemorySections" :key="'node-' + section.key" class="memory-section">
                         <n-text depth="3" class="memory-section-title">{{ section.label }}</n-text>
@@ -490,6 +512,10 @@
                 <n-collapse-item title="阶段 Memory" name="stage">
                   <template v-if="currentStage">
                     <div v-if="stageMemorySummary" class="memory-summary">{{ stageMemorySummary }}</div>
+                    <div v-if="currentStageMemory?.execution_log" class="memory-execution-log">
+                      <n-text depth="3" class="memory-section-title">执行过程</n-text>
+                      <div class="execution-log-content">{{ currentStageMemory.execution_log }}</div>
+                    </div>
                     <div v-if="stageMemorySections.length" class="memory-sections">
                       <div v-for="section in stageMemorySections" :key="'stage-' + section.key" class="memory-section">
                         <n-text depth="3" class="memory-section-title">{{ section.label }}</n-text>
@@ -507,6 +533,10 @@
                 </n-collapse-item>
                 <n-collapse-item title="任务 Memory" name="task">
                   <div v-if="taskMemorySummary" class="memory-summary">{{ taskMemorySummary }}</div>
+                  <div v-if="taskMemory?.execution_log" class="memory-execution-log">
+                    <n-text depth="3" class="memory-section-title">执行过程</n-text>
+                    <div class="execution-log-content">{{ taskMemory.execution_log }}</div>
+                  </div>
                   <div v-if="taskMemorySections.length" class="memory-sections">
                     <div v-for="section in taskMemorySections" :key="'task-' + section.key" class="memory-section">
                       <n-text depth="3" class="memory-section-title">{{ section.label }}</n-text>
@@ -785,7 +815,7 @@ const currentStage = ref(null)
 const currentStageMemory = ref(null)
 const recentRuns = ref([])
 const stages = ref([])
-const treeMode = ref('focus')
+const treeMode = ref('full')
 const summaryMode = ref(true)
 const selectedNodeId = ref('')
 const selectedNode = ref(null)
@@ -816,7 +846,7 @@ const showRunLog = ref(false)
 const nodeCreateParent = ref('')
 
 // Forms
-const editForm = reactive({ title: '', estimate: null, instruction: '', acceptance: '' })
+const editForm = reactive({ title: '', estimate: null, instruction: '', acceptance: '', depends_on: '' })
 const progressForm = reactive({ delta: 0.1, targetPct: null, message: '' })
 const completeForm = reactive({ message: '' })
 const newNodeForm = reactive({ title: '', node_key: '', estimate: null, instruction: '', acceptance: '', template: null })
@@ -844,6 +874,21 @@ const selectedArtifacts = computed(() => nodeArtifacts.value.length ? nodeArtifa
 const taskSummaryText = computed(() => excerpt(taskMemory.value?.summary || task.value?.goal || '', 140))
 const stageSummaryText = computed(() => excerpt(currentStageMemory.value?.summary || currentStage.value?.title || '', 120))
 const selectedMemoryText = computed(() => excerpt(selectedNodeMemory.value?.summary || selectedNode.value?.instruction || '', 160))
+const parsedDependsOn = computed(() => {
+  const node = selectedNode.value
+  if (!node) return []
+  const raw = node.depends_on_json || node.depends_on || '[]'
+  const arr = typeof raw === 'string' ? JSON.parse(raw || '[]') : (Array.isArray(raw) ? raw : [])
+  return arr.filter(Boolean)
+})
+function depNodeStatus(depId) {
+  const n = nodes.value.find(x => x.id === depId)
+  return n ? n.status : 'unknown'
+}
+function depNodeTitle(depId) {
+  const n = nodes.value.find(x => x.id === depId)
+  return n ? n.title : ''
+}
 const activeRun = computed(() => nodeRuns.value.find(run => run.status === 'running') || null)
 const selectedRun = computed(() => {
   if (!selectedRunId.value) return null
@@ -1157,12 +1202,18 @@ async function selectNode(nodeId, opts = {}) {
     editForm.estimate = node.estimate || null
     editForm.instruction = node.instruction || ''
     editForm.acceptance = (node.acceptance_criteria || []).join('\n')
+    const depsRaw = node.depends_on_json || node.depends_on || '[]'
+    const depsArr = typeof depsRaw === 'string' ? (JSON.parse(depsRaw || '[]')) : (Array.isArray(depsRaw) ? depsRaw : [])
+    editForm.depends_on = depsArr.filter(Boolean).join('\n')
     updateSelectedRelationships(nodeId)
     selectedNodeMemory.value = context?.memory || null
     selectedStageSummary.value = context?.stage_summary || null
     nodeRuns.value = context?.recent_runs || await listNodeRuns(nodeId, 10).catch(() => [])
     nodeArtifacts.value = context?.artifacts || []
-    const initialRunId = activeRun.value?.id || activeRun.value?.run_id || nodeRuns.value[0]?.id || nodeRuns.value[0]?.run_id || ''
+    // Preserve current run selection on refresh; only auto-select on first load
+    const prevRunId = opts.forceFetch ? selectedRunId.value : ''
+    const keepRunId = prevRunId && nodeRuns.value.some(r => (r.id || r.run_id) === prevRunId) ? prevRunId : ''
+    const initialRunId = keepRunId || activeRun.value?.id || activeRun.value?.run_id || nodeRuns.value[0]?.id || nodeRuns.value[0]?.run_id || ''
     if (initialRunId) await selectRun(initialRunId)
     else {
       selectedRunId.value = ''
@@ -1215,16 +1266,24 @@ async function load() {
     const parentIds = new Set(nodes.value.filter(n => n.parent_node_id).map(n => n.parent_node_id))
     if (expandedKeys.value.length === 0) expandedKeys.value = [...parentIds]
 
-    // Select next node or first
+    // Update next_node reference (for the "下一步" button)
     if (resume.next_node?.node) {
       nextNode.value = normalizeNode(resume.next_node.node)
-      const nextId = nextNode.value.id
-      const node = nodes.value.find(n => n.id === nextId)
-      const selectOpts = { events: resume.next_node.recent_events || [] }
-      if (node) selectOpts.node = node
-      await selectNode(nextId, selectOpts)
+    }
+
+    // Select node: keep current selection on refresh, only auto-select on first load
+    const currentId = selectedNodeId.value
+    if (currentId && nodes.value.find(n => n.id === currentId)) {
+      // Refresh current node in-place without changing selection
+      await selectNode(currentId, { forceFetch: true })
     } else if (typeof route.query.node === 'string' && route.query.node) {
       await selectNode(route.query.node)
+    } else if (nextNode.value) {
+      const nextId = nextNode.value.id
+      const node = nodes.value.find(n => n.id === nextId)
+      const selectOpts = { events: resume.next_node?.recent_events || [] }
+      if (node) selectOpts.node = node
+      await selectNode(nextId, selectOpts)
     } else if (nodes.value.length > 0) {
       const sorted = [...nodes.value].sort((a, b) => {
         const so = (a.sort_order ?? Infinity) - (b.sort_order ?? Infinity)
@@ -1679,9 +1738,13 @@ async function saveNode() {
     if (editForm.instruction !== undefined) body.instruction = editForm.instruction
     const criteria = editForm.acceptance.split('\n').map(s => s.trim()).filter(Boolean)
     if (criteria.length) body.acceptance_criteria = criteria
-    await api('/nodes/' + selectedNodeId.value, { method: 'PATCH', body: JSON.stringify(body) })
+    const deps = editForm.depends_on.split('\n').map(s => s.trim()).filter(Boolean)
+    body.depends_on = deps
+    const currentId = selectedNodeId.value
+    await api('/nodes/' + currentId, { method: 'PATCH', body: JSON.stringify(body) })
     window.$message?.success('已保存')
     await load()
+    if (currentId) await selectNode(currentId, { forceFetch: true })
   } catch (e) { window.$message?.error(e.message) }
   finally { submitting.value = false }
 }
@@ -1803,6 +1866,23 @@ onUnmounted(() => {
   line-height: 1.55;
   white-space: pre-wrap;
   margin-bottom: 6px;
+}
+
+.memory-execution-log {
+  margin-bottom: 6px;
+}
+
+.execution-log-content {
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  margin-top: 3px;
+  background: var(--n-color-modal);
+  border-radius: 4px;
+  border: 1px solid var(--n-border-color);
 }
 
 .memory-sections {

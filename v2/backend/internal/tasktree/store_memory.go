@@ -86,6 +86,9 @@ func (a *App) patchNodeMemoryManualNote(ctx context.Context, nodeID, note string
 		}
 		return nil
 	})
+	if err == nil && out != nil {
+		a.indexNodeMemory(ctx, out)
+	}
 	return out, err
 }
 
@@ -131,6 +134,22 @@ func (a *App) patchNodeMemoryFull(ctx context.Context, nodeID string, body memor
 			setClauses = append(setClauses, "evidence_json = ?")
 			args = append(args, mustJSON(body.Evidence))
 		}
+		if body.ExecutionLog != nil {
+			setClauses = append(setClauses, "execution_log = ?")
+			args = append(args, *body.ExecutionLog)
+		} else if body.AppendExecutionLog != nil {
+			appendText := strings.TrimSpace(*body.AppendExecutionLog)
+			if appendText != "" {
+				existing, _ := mem["execution_log"].(string)
+				if existing != "" {
+					setClauses = append(setClauses, "execution_log = ?")
+					args = append(args, existing+"\n"+appendText)
+				} else {
+					setClauses = append(setClauses, "execution_log = ?")
+					args = append(args, appendText)
+				}
+			}
+		}
 		if body.ManualNoteText != nil {
 			setClauses = append(setClauses, "manual_note_text = ?")
 			args = append(args, strings.TrimSpace(*body.ManualNoteText))
@@ -144,6 +163,9 @@ func (a *App) patchNodeMemoryFull(ctx context.Context, nodeID string, body memor
 		out, err = a.getNodeMemory(txCtx, nodeID)
 		return err
 	})
+	if err == nil && out != nil {
+		a.indexNodeMemory(ctx, out)
+	}
 	return out, err
 }
 
@@ -206,6 +228,7 @@ func (a *App) initNodeMemory(ctx context.Context, node jsonMap) (jsonMap, error)
 		"blockers":        []any{},
 		"next_actions":    []any{},
 		"evidence":        []string{},
+		"execution_log":    "",
 		"manual_note_text": "",
 		"source_run_id":   nil,
 		"created_at":      now,
@@ -214,16 +237,20 @@ func (a *App) initNodeMemory(ctx context.Context, node jsonMap) (jsonMap, error)
 	}
 	if _, err := a.execContext(ctx, `INSERT INTO node_memory_current(
 			node_id, task_id, stage_node_id, summary_text, conclusions_json, decisions_json, risks_json,
-			blockers_json, next_actions_json, evidence_json, manual_note_text, source_run_id, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			blockers_json, next_actions_json, evidence_json, execution_log, manual_note_text, source_run_id, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		payload["node_id"], payload["task_id"], payload["stage_node_id"], payload["summary_text"],
 		mustJSON(payload["conclusions"]), mustJSON(payload["decisions"]), mustJSON(payload["risks"]),
 		mustJSON(payload["blockers"]), mustJSON(payload["next_actions"]), mustJSON(payload["evidence"]),
-		payload["manual_note_text"], payload["source_run_id"], payload["created_at"], payload["updated_at"],
+		payload["execution_log"], payload["manual_note_text"], payload["source_run_id"], payload["created_at"], payload["updated_at"],
 	); err != nil {
 		return nil, err
 	}
-	return a.getNodeMemory(ctx, asString(node["id"]))
+	mem, err := a.getNodeMemory(ctx, asString(node["id"]))
+	if err == nil && mem != nil {
+		a.indexNodeMemory(ctx, mem)
+	}
+	return mem, err
 }
 
 func (a *App) initStageMemory(ctx context.Context, stage jsonMap) (jsonMap, error) {

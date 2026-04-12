@@ -2,6 +2,7 @@ package tasktree
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 )
@@ -17,6 +18,11 @@ func (a *App) buildFocusNodes(ctx context.Context, taskID string) ([]jsonMap, js
 	}
 	currentStageNodeID := asString(task["current_stage_node_id"])
 	ordered := orderedExecutableLeaves(nodes)
+	// Build ID->node map for dependency checks
+	nodesByID := make(map[string]jsonMap, len(nodes))
+	for _, n := range nodes {
+		nodesByID[asString(n["id"])] = n
+	}
 	var nextNode jsonMap
 	for _, node := range ordered {
 		if currentStageNodeID != "" && asString(node["stage_node_id"]) != currentStageNodeID {
@@ -32,7 +38,7 @@ func (a *App) buildFocusNodes(ctx context.Context, taskID string) ([]jsonMap, js
 			if currentStageNodeID != "" && asString(node["stage_node_id"]) != currentStageNodeID {
 				continue
 			}
-			if asString(node["status"]) == "ready" {
+			if asString(node["status"]) == "ready" && dependsMet(node, nodesByID) {
 				nextNode = node
 				break
 			}
@@ -40,7 +46,7 @@ func (a *App) buildFocusNodes(ctx context.Context, taskID string) ([]jsonMap, js
 	}
 	if nextNode == nil {
 		for _, node := range ordered {
-			if asString(node["status"]) == "running" || asString(node["status"]) == "ready" {
+			if (asString(node["status"]) == "running" || asString(node["status"]) == "ready") && dependsMet(node, nodesByID) {
 				nextNode = node
 				break
 			}
@@ -147,6 +153,7 @@ func (a *App) buildNodeContext(ctx context.Context, nodeID string) (jsonMap, err
 	if err != nil {
 		return nil, err
 	}
+	// 聚合祖先链（含每个祖先的 Memory）
 	ancestors := []jsonMap{}
 	parentID := asString(node["parent_node_id"])
 	for parentID != "" {
@@ -154,9 +161,23 @@ func (a *App) buildNodeContext(ctx context.Context, nodeID string) (jsonMap, err
 		if err != nil {
 			break
 		}
-		ancestors = append([]jsonMap{{"node_id": parent["id"], "path": parent["path"], "title": parent["title"]}}, ancestors...)
+		ancestorEntry := jsonMap{
+			"node_id": parent["id"],
+			"path":    parent["path"],
+			"title":   parent["title"],
+			"status":  parent["status"],
+		}
+		if parentMemory, mErr := a.getNodeMemory(ctx, parentID); mErr == nil {
+			ancestorEntry["memory_summary"] = asString(parentMemory["summary_text"])
+			ancestorEntry["decisions"] = parentMemory["decisions"]
+			ancestorEntry["blockers"] = parentMemory["blockers"]
+		}
+		ancestors = append([]jsonMap{ancestorEntry}, ancestors...)
 		parentID = asString(parent["parent_node_id"])
 	}
+
+	// 聚合任务级 Memory
+	taskMemory, _ := a.getTaskMemory(ctx, taskID)
 	rows, err := a.queryContext(ctx, `SELECT * FROM nodes WHERE task_id = ? AND parent_node_id = ? AND deleted_at IS NULL ORDER BY sort_order, created_at`, taskID, node["parent_node_id"])
 	if err != nil {
 		return nil, err
@@ -196,6 +217,7 @@ func (a *App) buildNodeContext(ctx context.Context, nodeID string) (jsonMap, err
 	}
 	return jsonMap{
 		"task":          task,
+		"task_memory":   taskMemory,
 		"node":          node,
 		"memory":        memory,
 		"ancestors":     ancestors,
@@ -240,11 +262,11 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 	if err != nil {
 		return nil, err
 	}
-	events, err := a.listEventsScoped(ctx, taskID, "", false, eventOpts.Before, eventOpts.After, limitWithFallback(eventOpts.Limit, 15), eventOpts)
+	events, err := a.listEventsScoped(ctx, taskID, "", false, eventOpts.Before, eventOpts.After, limitWithFallback(eventOpts.Limit, 5), eventOpts)
 	if err != nil {
 		return nil, err
 	}
-	runs, err := a.listTaskRuns(ctx, taskID, 10)
+	runs, err := a.listTaskRuns(ctx, taskID, 5)
 	if err != nil {
 		return nil, err
 	}
@@ -336,6 +358,29 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 		resp["full_tree"] = tree
 	}
 	return resp, nil
+}
+
+// dependsMet checks if all dependencies of a node are in "done" status.
+func dependsMet(node jsonMap, nodesByID map[string]jsonMap) bool {
+	raw := asString(node["depends_on_json"])
+	if raw == "" || raw == "[]" {
+		return true
+	}
+	var deps []string
+	if err := json.Unmarshal([]byte(raw), &deps); err != nil {
+		return true
+	}
+	for _, depID := range deps {
+		dep, ok := nodesByID[depID]
+		if !ok {
+			continue // missing dep node, don't block
+		}
+		s := asString(dep["status"])
+		if s != "done" && s != "canceled" {
+			return false
+		}
+	}
+	return true
 }
 
 func sortJSONMapsByPath(items []jsonMap) {

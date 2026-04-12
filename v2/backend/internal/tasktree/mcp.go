@@ -220,6 +220,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			Title:              stringArg(payload.Arguments, "title"),
 			Instruction:        optStringArg(payload.Arguments, "instruction"),
 			AcceptanceCriteria: stringSliceArg(payload.Arguments, "acceptance_criteria"),
+			DependsOn:          stringSliceArg(payload.Arguments, "depends_on"),
 			Estimate:           optFloatArg(payload.Arguments, "estimate"),
 			Status:             optStringArg(payload.Arguments, "status"),
 			SortOrder:          optIntArg(payload.Arguments, "sort_order"),
@@ -321,10 +322,12 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 		})
 	case "task_tree_update_node":
 		criteria := optStringSliceArg(payload.Arguments, "acceptance_criteria")
+		depends := optStringSliceArg(payload.Arguments, "depends_on")
 		result, err = s.app.updateNode(ctx, stringArg(payload.Arguments, "node_id"), nodeUpdate{
 			Title:              optStringArg(payload.Arguments, "title"),
 			Instruction:        optStringArg(payload.Arguments, "instruction"),
 			AcceptanceCriteria: criteria,
+			DependsOn:          depends,
 			Estimate:           optFloatArg(payload.Arguments, "estimate"),
 			SortOrder:          optIntArg(payload.Arguments, "sort_order"),
 			ExpectedVersion:    optIntArg(payload.Arguments, "expected_version"),
@@ -344,22 +347,43 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			BeforeNodeID: optStringArg(payload.Arguments, "before_node_id"),
 		})
 	case "task_tree_get_node":
-		result, err = s.app.findNode(ctx, stringArg(payload.Arguments, "node_id"), boolArg(payload.Arguments, "include_deleted"))
+		nodeID := stringArg(payload.Arguments, "node_id")
+		if boolArg(payload.Arguments, "include_context") {
+			result, err = s.app.buildNodeContext(ctx, nodeID)
+		} else {
+			result, err = s.app.findNode(ctx, nodeID, boolArg(payload.Arguments, "include_deleted"))
+		}
 	case "task_tree_progress":
 		result, err = s.app.reportProgress(ctx, stringArg(payload.Arguments, "node_id"), progressBody{
 			DeltaProgress:   optFloatArg(payload.Arguments, "delta_progress"),
 			Progress:        optFloatArg(payload.Arguments, "progress"),
 			Message:         optStringArg(payload.Arguments, "message"),
+			LogContent:      optStringArg(payload.Arguments, "log_content"),
 			Actor:           actorArg(payload.Arguments, "actor"),
 			IdempotencyKey:  optStringArg(payload.Arguments, "idempotency_key"),
 			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
 		})
 	case "task_tree_complete":
+		var inlineMemory *memoryFullPatchBody
+		if memArg := mapArg(payload.Arguments, "memory"); memArg != nil {
+			inlineMemory = &memoryFullPatchBody{
+				SummaryText:        optStringArg(memArg, "summary_text"),
+				Conclusions:        stringSliceArg(memArg, "conclusions"),
+				Decisions:          stringSliceArg(memArg, "decisions"),
+				Risks:              stringSliceArg(memArg, "risks"),
+				Blockers:           stringSliceArg(memArg, "blockers"),
+				NextActions:        stringSliceArg(memArg, "next_actions"),
+				Evidence:           stringSliceArg(memArg, "evidence"),
+				ExecutionLog:       optStringArg(memArg, "execution_log"),
+				AppendExecutionLog: optStringArg(memArg, "append_execution_log"),
+			}
+		}
 		result, err = s.app.completeNode(ctx, stringArg(payload.Arguments, "node_id"), completeBody{
 			Message:         optStringArg(payload.Arguments, "message"),
 			Actor:           actorArg(payload.Arguments, "actor"),
 			IdempotencyKey:  optStringArg(payload.Arguments, "idempotency_key"),
 			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
+			Memory:          inlineMemory,
 		})
 	case "task_tree_block_node":
 		result, err = s.app.blockNode(ctx, stringArg(payload.Arguments, "node_id"), blockBody{
@@ -398,7 +422,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 	case "task_tree_get_remaining":
 		result, err = s.app.getRemaining(ctx, stringArg(payload.Arguments, "task_id"))
 	case "task_tree_get_resume_context":
-		result, err = s.app.getResumeContext(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "node_id"), intArg(payload.Arguments, "event_limit", 10))
+		result, err = s.app.getResumeContext(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "node_id"), intArg(payload.Arguments, "event_limit", 5))
 	case "task_tree_list_events":
 		result, err = s.app.listEventsScoped(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "node_id"), boolArg(payload.Arguments, "include_descendants"), stringArg(payload.Arguments, "before"), stringArg(payload.Arguments, "after"), intArg(payload.Arguments, "limit", 100), eventListOptions{
 			Types:     stringSliceArg(payload.Arguments, "type"),
@@ -441,23 +465,73 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 		cleared, err = s.app.sweepExpiredLeases(ctx)
 		result = jsonMap{"cleared": cleared}
 	case "task_tree_search":
-		result, err = s.app.search(ctx, stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "kind"), intArg(payload.Arguments, "limit", 30))
+		// 已合并到 smart_search，内部转发
+		result, err = s.app.smartSearch(ctx, stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "kind"), "", intArg(payload.Arguments, "limit", 30))
 	case "task_tree_work_items":
 		result, err = s.app.listWorkItems(ctx, stringArgDefault(payload.Arguments, "status", "ready"), boolArg(payload.Arguments, "include_claimed"), intArg(payload.Arguments, "limit", 50))
 	case "task_tree_patch_node_memory":
 		result, err = s.app.patchNodeMemoryFull(ctx, stringArg(payload.Arguments, "node_id"), memoryFullPatchBody{
-			SummaryText:     optStringArg(payload.Arguments, "summary_text"),
-			Conclusions:     stringSliceArg(payload.Arguments, "conclusions"),
-			Decisions:       stringSliceArg(payload.Arguments, "decisions"),
-			Risks:           stringSliceArg(payload.Arguments, "risks"),
-			Blockers:        stringSliceArg(payload.Arguments, "blockers"),
-			NextActions:     stringSliceArg(payload.Arguments, "next_actions"),
-			Evidence:        stringSliceArg(payload.Arguments, "evidence"),
-			ManualNoteText:  optStringArg(payload.Arguments, "manual_note_text"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
+			SummaryText:        optStringArg(payload.Arguments, "summary_text"),
+			Conclusions:        stringSliceArg(payload.Arguments, "conclusions"),
+			Decisions:          stringSliceArg(payload.Arguments, "decisions"),
+			Risks:              stringSliceArg(payload.Arguments, "risks"),
+			Blockers:           stringSliceArg(payload.Arguments, "blockers"),
+			NextActions:        stringSliceArg(payload.Arguments, "next_actions"),
+			Evidence:           stringSliceArg(payload.Arguments, "evidence"),
+			ExecutionLog:       optStringArg(payload.Arguments, "execution_log"),
+			AppendExecutionLog: optStringArg(payload.Arguments, "append_execution_log"),
+			ManualNoteText:     optStringArg(payload.Arguments, "manual_note_text"),
+			ExpectedVersion:    optIntArg(payload.Arguments, "expected_version"),
 		})
 	case "task_tree_next_node":
 		result, err = s.app.findNextNode(ctx, stringArg(payload.Arguments, "task_id"))
+	case "task_tree_smart_search":
+		result, err = s.app.smartSearch(ctx, stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "scope"), stringArg(payload.Arguments, "task_id"), intArg(payload.Arguments, "limit", 20))
+	case "task_tree_batch_create_nodes":
+		nodesRaw, _ := payload.Arguments["nodes"].([]any)
+		bodies := make([]nodeCreate, 0, len(nodesRaw))
+		for _, raw := range nodesRaw {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			bodies = append(bodies, nodeCreate{
+				ParentNodeID:       optStringArg(m, "parent_node_id"),
+				StageNodeID:        optStringArg(m, "stage_node_id"),
+				NodeKey:            optStringArg(m, "node_key"),
+				Kind:               stringArgDefault(m, "kind", "leaf"),
+				Role:               optStringArg(m, "role"),
+				Title:              stringArg(m, "title"),
+				Instruction:        optStringArg(m, "instruction"),
+				AcceptanceCriteria: stringSliceArg(m, "acceptance_criteria"),
+				DependsOn:          stringSliceArg(m, "depends_on"),
+				Estimate:           optFloatArg(m, "estimate"),
+				Status:             optStringArg(m, "status"),
+				SortOrder:          optIntArg(m, "sort_order"),
+				Metadata:           mapArg(m, "metadata"),
+				CreatedByType:      optStringArg(m, "created_by_type"),
+				CreatedByID:        optStringArg(m, "created_by_id"),
+				CreationReason:     optStringArg(m, "creation_reason"),
+			})
+		}
+		var items []jsonMap
+		items, err = s.app.batchCreateNodes(ctx, stringArg(payload.Arguments, "task_id"), bodies)
+		result = jsonMap{"created": items, "count": len(items)}
+	case "task_tree_claim_and_start_run":
+		result, err = s.app.claimAndStartRun(ctx, stringArg(payload.Arguments, "node_id"), claimStartBody{
+			Actor:        mustActorArg(payload.Arguments, "actor"),
+			LeaseSeconds: optIntArg(payload.Arguments, "lease_seconds"),
+			InputSummary: optStringArg(payload.Arguments, "input_summary"),
+			TriggerKind:  optStringArg(payload.Arguments, "trigger_kind"),
+			Metadata:     mapArg(payload.Arguments, "metadata"),
+		})
+	case "task_tree_rebuild_index":
+		err = s.app.rebuildSearchIndex(ctx)
+		result = jsonMap{"status": "ok", "message": "索引重建完成"}
+	case "task_tree_wrapup":
+		result, err = s.app.wrapupTask(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "summary"))
+	case "task_tree_get_wrapup":
+		result, err = s.app.getWrapup(ctx, stringArg(payload.Arguments, "task_id"))
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", payload.Name)
 	}
@@ -485,7 +559,7 @@ func mcpTools() []mcpTool {
 				"max_depth":         intSchema("仅返回不超过该深度节点"),
 				"q":                 stringSchema("节点关键字搜索"),
 				"filter_mode":       stringSchema("all/focus/active/blocked/done"),
-				"view_mode":         stringSchema("summary/detail/events"),
+				"view_mode":         stringSchema("slim/summary/detail/events"),
 				"sort_by":           stringSchema("path/updated_at/created_at/status/progress"),
 				"sort_order":        stringSchema("asc/desc"),
 				"cursor":            stringSchema("tree 分页游标"),
@@ -603,6 +677,7 @@ func mcpTools() []mcpTool {
 				"role":                stringSchema("step/container/stage"),
 				"instruction":         stringSchema("执行说明"),
 				"acceptance_criteria": arrayStringSchema("验收标准"),
+				"depends_on":         arrayStringSchema("前置依赖节点 ID 列表，这些节点完成后此节点才可执行"),
 				"estimate":            numberSchema("预计工时"),
 				"status":              stringSchema("节点状态"),
 				"sort_order":          intSchema("排序"),
@@ -717,7 +792,7 @@ func mcpTools() []mcpTool {
 				"has_children":    boolSchema("按是否有子节点过滤"),
 				"q":               stringSchema("标题/路径/说明关键字"),
 				"filter_mode":     stringSchema("all/focus/active/blocked/done"),
-				"view_mode":       stringSchema("summary/detail/events"),
+				"view_mode":       stringSchema("slim/summary/detail/events"),
 				"sort_by":         stringSchema("path/updated_at/created_at/status/progress"),
 				"sort_order":      stringSchema("asc/desc"),
 				"cursor":          stringSchema("分页游标"),
@@ -727,7 +802,7 @@ func mcpTools() []mcpTool {
 		},
 		{
 			Name:        "task_tree_list_nodes_summary",
-			Description: "轻量节点读取：仅返回高价值摘要字段。",
+			Description: "[已废弃] 请改用 task_tree_list_nodes(view_mode: 'summary')。本工具保留向后兼容。",
 			InputSchema: objectSchema(map[string]any{
 				"task_id":     stringSchema("任务 ID"),
 				"status":      arrayStringSchema("按状态过滤"),
@@ -748,7 +823,7 @@ func mcpTools() []mcpTool {
 			InputSchema: objectSchema(map[string]any{
 				"task_id":    stringSchema("任务 ID"),
 				"status":     arrayStringSchema("可执行状态，默认 ready/running"),
-				"view_mode":  stringSchema("summary/detail/events"),
+				"view_mode":  stringSchema("slim/summary/detail/events"),
 				"sort_by":    stringSchema("path/updated_at/created_at/status/progress"),
 				"sort_order": stringSchema("asc/desc"),
 				"cursor":     stringSchema("分页游标"),
@@ -757,12 +832,13 @@ func mcpTools() []mcpTool {
 		},
 		{
 			Name:        "task_tree_update_node",
-			Description: "更新节点标题、instruction、验收标准、estimate 或 sort_order。",
+			Description: "更新节点标题、instruction、验收标准、depends_on、estimate 或 sort_order。",
 			InputSchema: objectSchema(map[string]any{
 				"node_id":             stringSchema("节点 ID"),
 				"title":               stringSchema("节点标题"),
 				"instruction":         stringSchema("执行说明"),
 				"acceptance_criteria": arrayStringSchema("验收标准"),
+				"depends_on":         arrayStringSchema("前置依赖节点 ID 列表"),
 				"estimate":            numberSchema("预计工时"),
 				"sort_order":          intSchema("排序序号"),
 				"expected_version":    intSchema("预期版本"),
@@ -786,37 +862,40 @@ func mcpTools() []mcpTool {
 		},
 		{
 			Name:        "task_tree_get_node",
-			Description: "获取单个节点详情。",
+			Description: "获取单个节点详情。传 include_context=true 可一步获取完整上下文（含 Memory、Runs、祖先链），省去单独调用 get_node_context。",
 			InputSchema: objectSchema(map[string]any{
 				"node_id":         stringSchema("节点 ID"),
 				"include_deleted": boolSchema("是否允许读取已删除节点"),
+				"include_context": boolSchema("是否包含完整上下文（Memory、Runs、祖先链等）"),
 			}, []string{"node_id"}),
 		},
 		{
 			Name:        "task_tree_progress",
-			Description: "上报节点进度。",
+			Description: "上报节点进度。可选内联日志（省去单独 append_run_log 调用）。",
 			InputSchema: objectSchema(map[string]any{
 				"node_id":         stringSchema("节点 ID"),
 				"delta_progress":  numberSchema("增量进度"),
 				"progress":        numberSchema("绝对进度"),
-				"message":         stringSchema("进度说明"),
+				"message":         stringSchema("进度说明（简短）"),
+				"log_content":     stringSchema("可选：详细日志内容，自动追加到活跃 Run（省去 append_run_log）"),
 				"idempotency_key": stringSchema("幂等 key"),
 				"actor":           actorSchema(),
 			}, []string{"node_id"}),
 		},
 		{
 			Name:        "task_tree_complete",
-			Description: "完成节点。",
+			Description: "完成节点。支持内联 Memory 写入（省去单独 patch_memory 调用），自动返回下一个可执行节点（省去单独 next_node 调用）。响应中 next 字段包含推荐的下一步。",
 			InputSchema: objectSchema(map[string]any{
 				"node_id":         stringSchema("节点 ID"),
 				"message":         stringSchema("完成说明"),
+				"memory":          mapSchema("可选：内联写入 Memory（含 summary_text, execution_log, conclusions, decisions, risks, evidence 等），省去单独调用 patch_node_memory"),
 				"idempotency_key": stringSchema("幂等 key"),
 				"actor":           actorSchema(),
 			}, []string{"node_id"}),
 		},
 		{
 			Name:        "task_tree_block_node",
-			Description: "将节点标记为阻塞。",
+			Description: "[已废弃] 请改用 task_tree_transition_node(action: 'block', message: reason)。本工具保留向后兼容。",
 			InputSchema: objectSchema(map[string]any{
 				"node_id": stringSchema("节点 ID"),
 				"reason":  stringSchema("阻塞原因"),
@@ -858,10 +937,10 @@ func mcpTools() []mcpTool {
 		},
 		{
 			Name:        "task_tree_transition_node",
-			Description: "流转叶子节点状态，支持 pause、reopen、cancel、unblock。",
+			Description: "流转叶子节点状态，支持 block、pause、reopen、cancel、unblock。",
 			InputSchema: objectSchema(map[string]any{
 				"node_id": stringSchema("节点 ID"),
-				"action":  stringSchema("pause/reopen/cancel/unblock"),
+				"action":  stringSchema("block/pause/reopen/cancel/unblock"),
 				"message": stringSchema("可选说明"),
 				"actor":   actorSchema(),
 			}, []string{"node_id", "action"}),
@@ -965,12 +1044,80 @@ func mcpTools() []mcpTool {
 		},
 		{
 			Name:        "task_tree_search",
-			Description: "搜索任务和节点。",
+			Description: "[已废弃] 请改用 task_tree_smart_search。本工具已内部转发到 smart_search。",
 			InputSchema: objectSchema(map[string]any{
 				"q":     stringSchema("搜索关键词"),
 				"kind":  stringSchema("all/tasks/nodes"),
 				"limit": intSchema("返回数量"),
 			}, []string{"q"}),
+		},
+		{
+			Name:        "task_tree_smart_search",
+			Description: "全文检索任务、节点和 Memory（FTS5 + BM25 排名）。搜索范围包括节点标题、instruction、execution_log、Memory 摘要等。推荐用于查找相关上下文和历史执行记录。",
+			InputSchema: objectSchema(map[string]any{
+				"q":       stringSchema("搜索关键词（支持多词 AND、引号精确匹配）"),
+				"scope":   stringSchema("搜索范围：all/task/node/memory（默认 all）"),
+				"task_id": stringSchema("限定在某个任务内搜索"),
+				"limit":   intSchema("返回数量（默认 20，最大 100）"),
+			}, []string{"q"}),
+		},
+		{
+			Name:        "task_tree_batch_create_nodes",
+			Description: "批量创建节点（N 个 create_node 合并为 1 次调用）。每个节点支持与 create_node 相同的参数。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringSchema("任务 ID"),
+				"nodes": map[string]any{
+					"type":        "array",
+					"description": "节点数组，每个元素与 create_node 参数相同",
+					"items": objectSchema(map[string]any{
+						"title":               stringSchema("节点标题"),
+						"parent_node_id":      stringSchema("父节点 ID"),
+						"stage_node_id":       stringSchema("所属阶段节点 ID"),
+						"node_key":            stringSchema("节点 key"),
+						"kind":                stringSchema("leaf/group"),
+						"role":                stringSchema("step/container/stage"),
+						"instruction":         stringSchema("执行说明"),
+						"acceptance_criteria": arrayStringSchema("验收标准"),
+						"depends_on":          arrayStringSchema("前置依赖节点 ID"),
+						"estimate":            numberSchema("预计工时"),
+						"status":              stringSchema("节点状态"),
+						"sort_order":          intSchema("排序"),
+						"metadata":            mapSchema("扩展元数据"),
+					}, []string{"title"}),
+				},
+			}, []string{"task_id", "nodes"}),
+		},
+		{
+			Name:        "task_tree_claim_and_start_run",
+			Description: "领取节点并自动创建 Run（合并 claim + start_run，2 次调用 → 1 次）。返回 node 和 run 信息。",
+			InputSchema: objectSchema(map[string]any{
+				"node_id":       stringSchema("节点 ID"),
+				"actor":         actorSchema(),
+				"lease_seconds": intSchema("租约秒数"),
+				"input_summary": stringSchema("输入摘要"),
+				"trigger_kind":  stringSchema("触发类型"),
+				"metadata":      mapSchema("扩展元数据"),
+			}, []string{"node_id", "actor"}),
+		},
+		{
+			Name:        "task_tree_rebuild_index",
+			Description: "重建全文检索索引。在数据迁移或索引异常时使用。",
+			InputSchema: objectSchema(map[string]any{}, nil),
+		},
+		{
+			Name:        "task_tree_wrapup",
+			Description: "写入任务收尾总结。在任务全部完成或阶段性收尾时调用，把本次改动、影响范围、验证结果、遗留问题等写入 wrapup_summary 字段。支持覆盖更新。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringSchema("任务 ID"),
+				"summary": stringSchema("收尾总结文本：包含本次改动、影响范围、验证结果、遗留问题和下次方向"),
+			}, []string{"task_id", "summary"}),
+		},
+		{
+			Name:        "task_tree_get_wrapup",
+			Description: "获取任务的收尾总结。通过任务 ID 直接获取 wrapup_summary 文本。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringSchema("任务 ID"),
+			}, []string{"task_id"}),
 		},
 		{
 			Name:        "task_tree_work_items",
@@ -993,6 +1140,8 @@ func mcpTools() []mcpTool {
 				"blockers":         arrayStringSchema("阻塞项列表"),
 				"next_actions":     arrayStringSchema("下一步行动列表"),
 				"evidence":         arrayStringSchema("证据列表：改动的文件路径、命令输出、验证结果"),
+				"execution_log":          stringSchema("详细执行过程日志（覆盖模式）：传入后会替换整个字段"),
+				"append_execution_log":   stringSchema("追加执行日志（追加模式）：传入的内容会追加到现有 execution_log 末尾，用换行分隔。与 execution_log 互斥，优先使用 execution_log"),
 				"manual_note_text": stringSchema("人工备注"),
 				"expected_version": intSchema("乐观锁版本号"),
 			}, []string{"node_id"}),
@@ -1028,9 +1177,23 @@ func taskCreateSchema() map[string]any {
 		"source_tool":       stringSchema("来源工具"),
 		"source_session_id": stringSchema("来源会话"),
 		"tags":              arrayStringSchema("标签"),
+		"stages": map[string]any{
+			"type":        "array",
+			"description": "初始阶段列表；在 nodes 之前创建，第一个阶段自动激活。",
+			"items": objectSchema(map[string]any{
+				"title":               stringSchema("阶段标题"),
+				"node_key":            stringSchema("阶段 key"),
+				"instruction":         stringSchema("执行说明"),
+				"acceptance_criteria": arrayStringSchema("验收标准"),
+				"estimate":            numberSchema("预计工时"),
+				"sort_order":          intSchema("排序序号"),
+				"metadata":            mapSchema("扩展元数据"),
+				"activate":            boolSchema("是否创建后立即激活"),
+			}, []string{"title"}),
+		},
 		"nodes": map[string]any{
 			"type":        "array",
-			"description": "初始节点树；每个节点可继续带 children 递归细分。",
+			"description": "初始节点树；每个节点可继续带 children 递归细分。如果有 stages，节点将归入当前激活阶段。",
 			"items": map[string]any{
 				"$ref": "#/$defs/task_node_seed",
 			},

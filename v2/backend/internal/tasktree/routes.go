@@ -163,6 +163,18 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
+	case strings.HasSuffix(path, "/nodes/batch") && r.Method == http.MethodPost:
+		var bodies []nodeCreate
+		if err := decodeJSON(r, &bodies); err != nil {
+			writeErr(w, err)
+			return
+		}
+		items, err := a.batchCreateNodes(r.Context(), taskIDFromPath(path), bodies)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, jsonMap{"created": items, "count": len(items)})
 	case strings.HasSuffix(path, "/nodes") && r.Method == http.MethodPost:
 		var body nodeCreate
 		if err := decodeJSON(r, &body); err != nil {
@@ -435,6 +447,18 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
+	case strings.HasSuffix(path, "/claim-and-start-run") && r.Method == http.MethodPost:
+		var body claimStartBody
+		if err := decodeJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		item, err := a.claimAndStartRun(r.Context(), nodeIDFromPath(path), body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
 	case strings.HasSuffix(path, "/claim") && r.Method == http.MethodPost:
 		var body claimBody
 		if err := decodeJSON(r, &body); err != nil {
@@ -527,6 +551,27 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
+	case strings.HasSuffix(path, "/wrapup") && strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodGet:
+		item, err := a.getWrapup(r.Context(), taskIDFromPath(path))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+	case strings.HasSuffix(path, "/wrapup") && strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodPost:
+		var body struct {
+			Summary string `json:"summary"`
+		}
+		if err := decodeJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		item, err := a.wrapupTask(r.Context(), taskIDFromPath(path), body.Summary)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
 	case strings.HasSuffix(path, "/events/stream") && strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodGet:
 		a.handleTaskEventsStream(w, r, taskIDFromPath(path))
 	case path == "/work-items" && r.Method == http.MethodGet:
@@ -543,6 +588,19 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
+	case path == "/smart-search" && r.Method == http.MethodGet:
+		item, err := a.smartSearch(r.Context(), r.URL.Query().Get("q"), r.URL.Query().Get("scope"), r.URL.Query().Get("task_id"), parseIntDefault(r.URL.Query().Get("limit"), 20))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+	case path == "/admin/rebuild-index" && r.Method == http.MethodPost:
+		if err := a.rebuildSearchIndex(r.Context()); err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, jsonMap{"status": "ok", "message": "索引重建完成"})
 	case path == "/events" && r.Method == http.MethodGet:
 		eventOpts := parseEventListOptions(r)
 		item, err := a.listEventsScoped(
