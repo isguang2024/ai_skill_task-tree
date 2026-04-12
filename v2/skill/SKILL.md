@@ -410,6 +410,71 @@ POST   /v1/admin/empty-trash              — 清空回收站
 
 ## 使用规范
 
+### ⚠️ 执行优先原则（最重要）
+
+**节点要求你做什么，你就去做什么。不要用"输出报告"替代"实际执行"。**
+
+**❌ 错误做法：** 节点说"删除无用文件"，你生成一份"待删除文件清单.md"然后标记完成
+```
+节点："清理重复的功能实现"
+错误行为：写一份 docs/reports/duplicate-audit.md，罗列发现，然后 complete
+问题：什么都没改，产出了一堆中间报告，代码原封不动
+```
+
+**✅ 正确做法：** 真正去删文件、改代码、跑验证，然后把结果记到 Memory
+```
+节点："清理重复的功能实现"
+正确行为：
+1. 分析哪些重复 → 直接删除/合并代码
+2. 跑 build/test 验证不破坏功能
+3. 在 Memory 的 evidence 中记录改了哪些文件
+4. complete 时写清实际改动
+```
+
+**判断标准：**
+- 节点描述中有动词（删除/迁移/重构/实现/修改）→ **必须执行对应操作**
+- 只有明确标注"调研/分析/设计"的节点 → 才可以仅输出文档
+- 如果不确定 → 默认执行，不要默认只输出
+
+**产出文件规则：**
+- 不要每个节点都生成一份 `.md` 报告
+- 审计/分析类结果直接写进 Memory 的结构化字段（evidence、conclusions、decisions）
+- 只有最终汇总文档才需要产出文件
+
+---
+
+### 自主推进规则
+
+**完成一个节点后，AI 应自主判断是否继续推进下一个节点。**
+
+**推进判断流程：**
+```
+节点 complete 后 →
+  1. 当前阶段还有 ready 节点？
+     ├─ 有 → 自动 claim 下一个，继续执行
+     └─ 没有 → 当前阶段已全部完成
+  2. 下一个节点是否有前置依赖？
+     ├─ 有未完成的依赖 → 跳过，找其他可执行节点
+     └─ 无依赖或依赖已完成 → 继续
+  3. 下一个节点涉及不可逆操作（删除/迁移）？
+     ├─ 是 → 暂停，向用户确认后再执行
+     └─ 否 → 直接执行
+  4. 阶段全部完成？
+     └─ 向用户报告阶段完成，询问是否进入下一阶段
+```
+
+**不需要用户确认就可以继续的情况：**
+- 同阶段内的连续节点
+- 纯代码修改、构建、测试类节点
+- 节点之间有明确的顺序关系
+
+**必须暂停确认的情况：**
+- 跨阶段切换
+- 涉及不可逆操作（删除文件/数据库迁移）
+- 节点完成后发现方向可能有误
+
+---
+
 ### 执行前必须 Claim
 
 **❌ 错误做法：** 直接开始执行和记录，不领取节点
@@ -457,14 +522,39 @@ task_tree_append_run_log(run_id, {
 **Memory 补充（经验沉淀）：**
 ```
 HTTP PATCH /v1/nodes/{id}/memory {
-  "manual_note_text": "使用了 X 方案，因为 Y 原因",
-  "decisions": ["决策1", "决策2"],
-  "risks": ["风险1"],
-  "next_actions": ["下步1"]
+  "summary_text": "完成了 XX 功能：删除 3 个重复文件，合并 2 个工具函数，构建通过",
+  "conclusions": ["utils/format.ts 和 helpers/format.ts 完全重复，保留 utils 版本", "iconify-loader.ts 无任何引用，安全删除"],
+  "decisions": ["选择保留 utils/ 下的版本，因为引用更多（12 vs 3）", "暂不合并 auth 壳层，需等路由重构完成"],
+  "risks": ["删除 iconify-loader 后如果有动态引用可能报错"],
+  "blockers": [],
+  "next_actions": ["下一节点处理 types 目录清理"],
+  "evidence": ["git diff: 删除 frontend/src/helpers/format.ts", "pnpm build 通过，无报错"]
 }
 ```
-- 节点完成后更新，记录关键决策和遗留项
-- 为下次执行或他人接手提供上下文
+
+**Memory 详细度要求：**
+- **`summary_text`**：必须写清"做了什么 + 量化结果"，不要只写"已完成"
+- **`conclusions`**：记录分析结论和判断依据，方便后续查阅
+- **`decisions`**：记录关键决策和选择原因（"选了 A 不选 B，因为…"）
+- **`evidence`**：记录实际改动的文件路径、命令输出、验证结果
+- **`risks`** / **`blockers`**：诚实记录风险和阻塞项，不要省略
+- **`next_actions`**：为下一个执行者留下明确的行动指引
+
+**❌ 不合格的 Memory：**
+```json
+{ "summary_text": "按清单完成安全删除", "evidence": ["按清单完成安全删除"] }
+```
+
+**✅ 合格的 Memory：**
+```json
+{
+  "summary_text": "删除 Instructions/ 目录（5个文件）和 iconify-loader.ts，pnpm build + vue-tsc 通过",
+  "conclusions": ["Instructions/ 全目录无引用，属于历史遗留", "iconify-loader.ts 在 vite.config 中已被注释"],
+  "decisions": ["直接 rm -rf 而非逐个删除，因为整个目录都是废弃的"],
+  "evidence": ["git status: 6 files deleted", "pnpm build exit 0", "vue-tsc --noEmit exit 0"],
+  "next_actions": ["继续节点 1.3 清理重复功能"]
+}
+```
 
 ---
 
