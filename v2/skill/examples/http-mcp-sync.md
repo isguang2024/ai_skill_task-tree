@@ -1,10 +1,10 @@
 # HTTP / MCP 对齐示例
 
-适用于检查或补齐 `task-tree-v2` 中 HTTP API 与 MCP 工具的一致性。
+适用于检查或补齐本项目中 HTTP API 与 MCP 工具的一致性。
 
 ## 示例提示词
 
-请检查 `task-tree-v2` 当前功能在 HTTP 和 MCP 两条入口上是否一致。
+请检查当前项目功能在 HTTP 和 MCP 两条入口上是否一致。
 
 要求：
 

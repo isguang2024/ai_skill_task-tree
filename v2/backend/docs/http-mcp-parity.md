@@ -1,6 +1,6 @@
 # HTTP / MCP 边界说明
 
-本文档描述 `task-tree-v2` 当前版本里，哪些能力已经同时提供 HTTP 与 MCP，哪些能力仍然是 HTTP 优先。
+本文档描述本项目（Task Tree V2）当前版本里，哪些能力已经同时提供 HTTP 与 MCP，哪些能力仍然是 HTTP 优先。
 
 ## 架构约定
 
