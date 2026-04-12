@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "task-tree": {
+      "url": "http://127.0.0.1:8880/mcp"
+    }
+  }
+}

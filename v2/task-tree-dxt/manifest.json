@@ -1,0 +1,40 @@
+{
+  "dxt_version": "0.2",
+  "name": "task-tree",
+  "display_name": "Task Tree",
+  "version": "0.2.0",
+  "description": "V2 task-tree DXT extension for local MCP over http://127.0.0.1:8880.",
+  "author": {
+    "name": "Local",
+    "url": "http://127.0.0.1:8880"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "proxy.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/proxy.mjs"
+      ]
+    }
+  },
+  "tools": [],
+  "keywords": [
+    "task",
+    "tree",
+    "project",
+    "management"
+  ],
+  "license": "MIT",
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "node": ">=16.0.0"
+    }
+  }
+}
