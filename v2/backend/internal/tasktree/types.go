@@ -16,6 +16,7 @@ type taskCreate struct {
 	Tags            []string       `json:"tags"`
 	Nodes           []taskNodeSeed `json:"nodes"`
 	Stages          []stageCreate  `json:"stages"`
+	DryRun          *bool          `json:"dry_run"`
 	Metadata        map[string]any `json:"metadata"`
 	CreatedByType   *string        `json:"created_by_type"`
 	CreatedByID     *string        `json:"created_by_id"`
@@ -28,6 +29,8 @@ type taskNodeSeed struct {
 	Title              string         `json:"title"`
 	Instruction        *string        `json:"instruction"`
 	AcceptanceCriteria []string       `json:"acceptance_criteria"`
+	DependsOn          []string       `json:"depends_on"`
+	DependsOnKeys      []string       `json:"depends_on_keys"`
 	Estimate           *float64       `json:"estimate"`
 	Status             *string        `json:"status"`
 	SortOrder          *int           `json:"sort_order"`
@@ -56,6 +59,7 @@ type nodeCreate struct {
 	Instruction        *string        `json:"instruction"`
 	AcceptanceCriteria []string       `json:"acceptance_criteria"`
 	DependsOn          []string       `json:"depends_on"`
+	DependsOnKeys      []string       `json:"depends_on_keys"`
 	Estimate           *float64       `json:"estimate"`
 	Status             *string        `json:"status"`
 	SortOrder          *int           `json:"sort_order"`
@@ -75,6 +79,10 @@ type stageCreate struct {
 	Metadata           map[string]any `json:"metadata"`
 	Activate           *bool          `json:"activate"`
 	ExpectedVersion    *int           `json:"expected_version"`
+}
+
+type stageBatchCreate struct {
+	Stages []stageCreate `json:"stages"`
 }
 
 type stageActivate struct {
@@ -112,6 +120,7 @@ type nodeUpdate struct {
 	Instruction        *string   `json:"instruction"`
 	AcceptanceCriteria *[]string `json:"acceptance_criteria"`
 	DependsOn          *[]string `json:"depends_on"`
+	DependsOnKeys      *[]string `json:"depends_on_keys"`
 	Estimate           *float64  `json:"estimate"`
 	SortOrder          *int      `json:"sort_order"`
 	ExpectedVersion    *int      `json:"expected_version"`
@@ -142,6 +151,7 @@ type completeBody struct {
 	IdempotencyKey  *string              `json:"idempotency_key"`
 	ExpectedVersion *int                 `json:"expected_version"`
 	Memory          *memoryFullPatchBody `json:"memory"`
+	ResultPayload   map[string]any       `json:"result_payload"`
 }
 
 type claimStartBody struct {
@@ -190,8 +200,11 @@ type artifactUpload struct {
 }
 
 type memoryPatchBody struct {
-	ManualNoteText string `json:"manual_note_text"`
-	ExpectedVersion *int   `json:"expected_version"`
+	ManualNoteText        string   `json:"manual_note_text"`
+	ArchitectureDecisions []string `json:"architecture_decisions"`
+	ReferenceFiles        []string `json:"reference_files"`
+	ContextDocText        string   `json:"context_doc_text"`
+	ExpectedVersion       *int     `json:"expected_version"`
 }
 
 type memoryFullPatchBody struct {
@@ -260,4 +273,17 @@ type eventListOptions struct {
 	Before      string
 	After       string
 	IncludeDesc bool
+}
+
+type taskContextPatchBody struct {
+	ArchitectureDecisions *[]string `json:"architecture_decisions"`
+	ReferenceFiles        *[]string `json:"reference_files"`
+	ContextDocText        *string   `json:"context_doc_text"`
+	ExpectedVersion       *int      `json:"expected_version"`
+}
+
+type importPlanBody struct {
+	Format string `json:"format"`
+	Data   string `json:"data"`
+	Apply  *bool  `json:"apply"`
 }

@@ -98,6 +98,10 @@ func (a *App) findNextNode(ctx context.Context, taskID string) (jsonMap, error) 
 			"message": "当前没有可执行的节点（所有节点已完成或被阻塞）",
 		}, nil
 	}
+	alternatives, err := a.buildParallelAlternatives(ctx, taskID, nextNode)
+	if err != nil {
+		return nil, err
+	}
 
 	nodeID := asString(nextNode["id"])
 	memory, _ := a.getNodeMemory(ctx, nodeID)
@@ -118,13 +122,14 @@ func (a *App) findNextNode(ctx context.Context, taskID string) (jsonMap, error) 
 		action = "review"
 	}
 
-	return jsonMap{
+	resp := jsonMap{
 		"found":  true,
 		"node":   buildNodeSummary(nextNode),
 		"memory": memory,
 		"recommended_action": jsonMap{
-			"action":  action,
-			"node_id": nodeID,
+			"action":       action,
+			"node_id":      nodeID,
+			"alternatives": alternatives,
 			"hint": func() string {
 				switch action {
 				case "claim":
@@ -136,7 +141,17 @@ func (a *App) findNextNode(ctx context.Context, taskID string) (jsonMap, error) 
 				}
 			}(),
 		},
-	}, nil
+	}
+	task, taskErr := a.getTask(ctx, taskID, false)
+	if taskErr == nil {
+		currentStageID := asString(task["current_stage_node_id"])
+		if currentStageID != "" {
+			if stage, stageErr := a.findNode(ctx, currentStageID, false); stageErr == nil && stageLooksCompleted(stage) {
+				resp["pr_suggestion"] = buildPRSuggestion(task, stage)
+			}
+		}
+	}
+	return resp, nil
 }
 
 func (a *App) buildNodeContext(ctx context.Context, nodeID string) (jsonMap, error) {
@@ -215,17 +230,24 @@ func (a *App) buildNodeContext(ctx context.Context, nodeID string) (jsonMap, err
 			"memory": stageMemory,
 		}
 	}
+	latestResultPayload := map[string]any{}
+	if len(runs) > 0 {
+		if structured := asAnyMap(runs[0]["structured_result"]); structured != nil {
+			latestResultPayload = structured
+		}
+	}
 	return jsonMap{
-		"task":          task,
-		"task_memory":   taskMemory,
-		"node":          node,
-		"memory":        memory,
-		"ancestors":     ancestors,
-		"siblings":      siblingSummaries,
-		"recent_runs":   runs,
-		"recent_events": events["items"],
-		"artifacts":     artifacts,
-		"stage_summary": stageSummary,
+		"task":                  task,
+		"task_memory":           taskMemory,
+		"node":                  node,
+		"memory":                memory,
+		"ancestors":             ancestors,
+		"siblings":              siblingSummaries,
+		"recent_runs":           runs,
+		"latest_result_payload": latestResultPayload,
+		"recent_events":         events["items"],
+		"artifacts":             artifacts,
+		"stage_summary":         stageSummary,
 	}, nil
 }
 
@@ -262,7 +284,11 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 	if err != nil {
 		return nil, err
 	}
-	events, err := a.listEventsScoped(ctx, taskID, "", false, eventOpts.Before, eventOpts.After, limitWithFallback(eventOpts.Limit, 5), eventOpts)
+	eventFallback := 5
+	if taskStatus := asString(task["status"]); taskStatus == "done" || taskStatus == "canceled" {
+		eventFallback = 3
+	}
+	events, err := a.listEventsScoped(ctx, taskID, "", false, eventOpts.Before, eventOpts.After, limitWithFallback(eventOpts.Limit, eventFallback), eventOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -275,12 +301,12 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 		return nil, err
 	}
 	debug := jsonMap{
-		"used_stage":        currentStageNodeID != "",
-		"focus_nodes_count": len(focusNodes),
-		"recent_runs_count": len(runs),
+		"used_stage":          currentStageNodeID != "",
+		"focus_nodes_count":   len(focusNodes),
+		"recent_runs_count":   len(runs),
 		"recent_events_count": len(workspaceAsItems(events["items"])),
-		"used_snapshot":     false,
-		"detail_fallback":   len(focusNodes) == 0,
+		"used_snapshot":       false,
+		"detail_fallback":     len(focusNodes) == 0,
 	}
 	var nextCtx any
 	if nextNode != nil {
@@ -322,21 +348,24 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 	}
 
 	resp := jsonMap{
-		"task":               task,
-		"task_memory":        taskMemory,
-		"current_stage":      currentStage,
+		"task":                 trimTaskForResume(task),
+		"task_memory":          trimTaskMemoryForResume(taskMemory),
+		"current_stage":        trimStageForResume(currentStage),
 		"current_stage_memory": currentStageMemory,
-		"tree":               focusNodes,
-		"tree_has_more":      false,
-		"tree_cursor":        nil,
-		"remaining":          remaining,
-		"recent_events":      events["items"],
-		"events_cursor":      events["next_cursor"],
-		"recent_runs":        runs,
-		"artifacts":          artifacts,
-		"next_node":          nextCtx,
-		"recommended_action": recommendedAction,
-		"debug":              debug,
+		"tree":                 focusNodes,
+		"tree_has_more":        false,
+		"tree_cursor":          nil,
+		"remaining":            remaining,
+		"recent_events":        events["items"],
+		"events_cursor":        events["next_cursor"],
+		"recent_runs":          runs,
+		"artifacts":            artifacts,
+		"next_node":            nextCtx,
+		"recommended_action":   recommendedAction,
+		"debug":                debug,
+	}
+	if currentStage != nil && stageLooksCompleted(currentStage) {
+		resp["pr_suggestion"] = buildPRSuggestion(task, currentStage)
 	}
 	if nodeOpts.IncludeFullTree {
 		nodes, err := a.listNodes(ctx, taskID)
@@ -358,6 +387,57 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 		resp["full_tree"] = tree
 	}
 	return resp, nil
+}
+
+func (a *App) buildParallelAlternatives(ctx context.Context, taskID string, nextNode jsonMap) ([]jsonMap, error) {
+	nodes, err := a.listNodes(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	nodesByID := make(map[string]jsonMap, len(nodes))
+	for _, node := range nodes {
+		nodesByID[asString(node["id"])] = node
+	}
+	ordered := orderedExecutableLeaves(nodes)
+	nextID := asString(nextNode["id"])
+	nextParentID := asString(nextNode["parent_node_id"])
+	nextStageID := asString(nextNode["stage_node_id"])
+	parentRole := ""
+	if nextParentID != "" {
+		parentRole = asString(nodesByID[nextParentID]["role"])
+	}
+
+	candidates := make([]jsonMap, 0, 3)
+	for _, node := range ordered {
+		id := asString(node["id"])
+		if id == "" || id == nextID {
+			continue
+		}
+		status := asString(node["status"])
+		if status != "ready" && status != "running" {
+			continue
+		}
+		if !dependsMet(node, nodesByID) {
+			continue
+		}
+		if parentRole == "parallel_group" {
+			if asString(node["parent_node_id"]) != nextParentID {
+				continue
+			}
+		} else if nextStageID != "" && asString(node["stage_node_id"]) != nextStageID {
+			continue
+		}
+		candidates = append(candidates, jsonMap{
+			"node_id": id,
+			"path":    asString(node["path"]),
+			"title":   asString(node["title"]),
+			"status":  status,
+		})
+		if len(candidates) >= 3 {
+			break
+		}
+	}
+	return candidates, nil
 }
 
 // dependsMet checks if all dependencies of a node are in "done" status.
@@ -415,5 +495,55 @@ func dirtyEnvelopeForEvent(event jsonMap, node jsonMap) jsonMap {
 		"run_id":        runID,
 		"dirty":         mergeStringSlice(nil, dirty),
 		"ts":            event["created_at"],
+	}
+}
+
+func trimTaskForResume(task jsonMap) jsonMap {
+	if task == nil {
+		return nil
+	}
+	return jsonMap{
+		"id":                    task["id"],
+		"task_key":              task["task_key"],
+		"title":                 task["title"],
+		"status":                task["status"],
+		"project_id":            task["project_id"],
+		"current_stage_node_id": task["current_stage_node_id"],
+		"summary_percent":       task["summary_percent"],
+		"summary_done":          task["summary_done"],
+		"summary_total":         task["summary_total"],
+		"summary_blocked":       task["summary_blocked"],
+		"updated_at":            task["updated_at"],
+		"version":               task["version"],
+	}
+}
+
+func trimTaskMemoryForResume(mem jsonMap) jsonMap {
+	if mem == nil {
+		return nil
+	}
+	return jsonMap{
+		"task_id":      mem["task_id"],
+		"summary_text": mem["summary_text"],
+		"decisions":    mem["decisions"],
+		"next_actions": mem["next_actions"],
+		"risks":        mem["risks"],
+		"blockers":     mem["blockers"],
+		"version":      mem["version"],
+		"updated_at":   mem["updated_at"],
+	}
+}
+
+func trimStageForResume(stage jsonMap) jsonMap {
+	if stage == nil {
+		return nil
+	}
+	return jsonMap{
+		"id":          stage["id"],
+		"title":       stage["title"],
+		"status":      stage["status"],
+		"progress":    stage["progress"],
+		"node_key":    stage["node_key"],
+		"instruction": stage["instruction"],
 	}
 }

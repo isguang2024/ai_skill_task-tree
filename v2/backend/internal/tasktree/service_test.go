@@ -260,6 +260,18 @@ func TestSmokeFlow(t *testing.T) {
 	if !foundCarry {
 		t.Fatal("expected auto-generated carry child RB/1/1")
 	}
+	// 模拟历史数据脏状态：父节点仍被标记为 leaf，但实际上已有子节点。
+	if _, err := app.db.Exec(`UPDATE nodes SET kind = 'leaf', status = 'ready', result = '' WHERE id = ?`, stringValue(parentLeaf["id"])); err != nil {
+		t.Fatalf("inject stale leaf kind failed: %v", err)
+	}
+	remainingAfterLegacyDrift := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4b+"/remaining")
+	nextReadyAfterLegacyDrift, _ := remainingAfterLegacyDrift["next_ready_nodes"].([]any)
+	for _, item := range nextReadyAfterLegacyDrift {
+		readyNode, _ := item.(map[string]any)
+		if stringValue(readyNode["node_id"]) == stringValue(parentLeaf["id"]) {
+			t.Fatalf("next_ready_nodes should exclude stale parent leaf with children: %#v", nextReadyAfterLegacyDrift)
+		}
+	}
 
 	tid4d := stringValue(postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "空分组转回执行节点", "task_key": "RT"})["id"])
 	emptyGroup := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4d+"/nodes", map[string]any{"title": "占位分组", "node_key": "1", "kind": "group"})
@@ -752,6 +764,26 @@ func TestStagesFlow(t *testing.T) {
 	if stringValue(step2["stage_node_id"]) != stringValue(stage2["id"]) {
 		t.Fatalf("step2 stage_node_id = %v", step2["stage_node_id"])
 	}
+
+	// 即使当前激活阶段是 stage2，显式 stage_node_id 仍应决定默认父节点归属。
+	batch := postJSONArray[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/batch", []map[string]any{
+		{
+			"title":         "显式归属阶段一",
+			"node_key":      "2",
+			"stage_node_id": stringValue(stage1["id"]),
+		},
+	})
+	created, _ := batch["created"].([]any)
+	if len(created) != 1 {
+		t.Fatalf("batch created len = %d", len(created))
+	}
+	createdNode, _ := created[0].(map[string]any)
+	if stringValue(createdNode["parent_node_id"]) != stringValue(stage1["id"]) {
+		t.Fatalf("batch node parent should follow stage_node_id, got %v", createdNode["parent_node_id"])
+	}
+	if stringValue(createdNode["stage_node_id"]) != stringValue(stage1["id"]) {
+		t.Fatalf("batch node stage_node_id = %v", createdNode["stage_node_id"])
+	}
 }
 
 func TestNodeRunsFlow(t *testing.T) {
@@ -1112,6 +1144,183 @@ func TestMigrationDuplicateVersionAndExpectedVersionConflict(t *testing.T) {
 	}
 }
 
+func TestDryRunAndBatchAtomicDependsOnKeys(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "dryrun-atomic.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	dry := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{
+		"title":    "DryRun 任务",
+		"task_key": "DRY",
+		"dry_run":  true,
+		"stages": []map[string]any{
+			{"title": "S1", "node_key": "S1", "activate": true},
+		},
+		"nodes": []map[string]any{
+			{"title": "N1", "node_key": "N1"},
+			{"title": "N2", "node_key": "N2", "depends_on_keys": []string{"N1"}},
+		},
+	})
+	if dry["dry_run"] != true || dry["validated"] != true {
+		t.Fatalf("dry-run validate failed: %#v", dry)
+	}
+	tasksAfterDry := getJSON[[]map[string]any](t, server.URL+"/v1/tasks")
+	if len(tasksAfterDry) != 0 {
+		t.Fatalf("dry-run should not persist task, got %d", len(tasksAfterDry))
+	}
+
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "原子批量", "task_key": "ATOMIC"})
+	taskID := stringValue(task["id"])
+	raw := postJSONArrayRaw(t, server.URL+"/v1/tasks/"+taskID+"/nodes/batch", []map[string]any{
+		{"title": "A", "node_key": "A"},
+		{"title": "B", "node_key": "B", "depends_on_keys": []string{"NOT_FOUND"}},
+	}, http.StatusBadRequest)
+	if !strings.Contains(string(raw), "depends_on_keys") {
+		t.Fatalf("unexpected batch failure body: %s", string(raw))
+	}
+	nodes := getJSON[[]map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes")
+	if len(nodes) != 0 {
+		t.Fatalf("batch should rollback on failure, got %d nodes", len(nodes))
+	}
+}
+
+func TestCheckpointCompletionAndLatestResultPayload(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "checkpoint.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "Checkpoint 任务", "task_key": "CP"})
+	taskID := stringValue(task["id"])
+	node := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{
+		"title":    "构建检查点",
+		"node_key": "CK1",
+		"role":     "checkpoint",
+		"metadata": map[string]any{
+			"checkpoint_spec": map[string]any{
+				"required_commands": []string{"go build ./..."},
+			},
+		},
+	})
+	nodeID := stringValue(node["id"])
+
+	noPayload := postJSONRaw(t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+nodeID+"/complete", map[string]any{"message": "缺少结果"}, http.StatusConflict)
+	if !strings.Contains(string(noPayload), "commands_verified") {
+		t.Fatalf("checkpoint should require commands_verified, body=%s", string(noPayload))
+	}
+	wrongPayload := postJSONRaw(t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+nodeID+"/complete", map[string]any{
+		"message": "命令不匹配",
+		"result_payload": map[string]any{
+			"commands_verified": []string{"go test ./..."},
+		},
+	}, http.StatusConflict)
+	if !strings.Contains(string(wrongPayload), "checkpoint 未通过") {
+		t.Fatalf("checkpoint mismatch body=%s", string(wrongPayload))
+	}
+
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+nodeID+"/complete", map[string]any{
+		"message": "检查点通过",
+		"result_payload": map[string]any{
+			"files_modified":    []string{"backend/main.go"},
+			"commands_verified": []string{"go build ./..."},
+			"notes":             "构建已通过",
+		},
+	})
+
+	ctxNode := getJSON[map[string]any](t, server.URL+"/v1/nodes/"+nodeID+"/context")
+	latest, _ := ctxNode["latest_result_payload"].(map[string]any)
+	if latest == nil {
+		t.Fatalf("missing latest_result_payload in node context: %#v", ctxNode)
+	}
+	verified, _ := latest["commands_verified"].([]any)
+	if len(verified) != 1 || stringValue(verified[0]) != "go build ./..." {
+		t.Fatalf("unexpected latest commands_verified: %#v", latest["commands_verified"])
+	}
+	runs := getJSON[[]map[string]any](t, server.URL+"/v1/nodes/"+nodeID+"/runs")
+	if len(runs) == 0 {
+		t.Fatal("expected node runs")
+	}
+	if runs[0]["latest_result_payload"] == nil {
+		t.Fatalf("run missing latest_result_payload: %#v", runs[0])
+	}
+}
+
+func TestParallelGroupAlternativesAndStageSuggestions(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "parallel-stage.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "并行与阶段建议", "task_key": "PAR"})
+	taskID := stringValue(task["id"])
+	stage1 := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/stages", map[string]any{"title": "数据层", "node_key": "S1", "activate": true})
+	stage2 := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/stages", map[string]any{"title": "服务层", "node_key": "S2"})
+
+	group := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{
+		"title":         "并行组",
+		"node_key":      "PG",
+		"kind":          "group",
+		"role":          "parallel_group",
+		"stage_node_id": stage1["id"],
+	})
+	childA := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{
+		"title":          "并行任务A",
+		"parent_node_id": group["id"],
+		"node_key":       "1",
+	})
+	childB := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{
+		"title":          "并行任务B",
+		"parent_node_id": group["id"],
+		"node_key":       "2",
+	})
+
+	next := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/next-node")
+	rec, _ := next["recommended_action"].(map[string]any)
+	alts, _ := rec["alternatives"].([]any)
+	if len(alts) == 0 {
+		t.Fatalf("parallel group should return alternatives: %#v", next)
+	}
+
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+stringValue(childA["id"])+"/complete", map[string]any{"message": "A done"})
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+stringValue(childB["id"])+"/complete", map[string]any{"message": "B done"})
+	resume := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/resume")
+	if resume["pr_suggestion"] == nil {
+		t.Fatalf("resume should include pr_suggestion when stage completed: %#v", resume)
+	}
+
+	activated := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/stages/"+stringValue(stage2["id"])+"/activate", map[string]any{})
+	gitSuggestion, _ := activated["git_suggestion"].(map[string]any)
+	if gitSuggestion == nil || !strings.HasPrefix(stringValue(gitSuggestion["branch_name"]), "feature/") {
+		t.Fatalf("activate stage should include git_suggestion branch_name: %#v", activated)
+	}
+
+	patchJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/context", map[string]any{
+		"architecture_decisions": []string{"使用 Gin 路由，避免重复生成"},
+		"reference_files":        []string{"backend/internal/api/router/router.go"},
+		"context_doc_text":       "social_token TTL 固定 5 分钟",
+	})
+	taskCtx := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/context")
+	if taskCtx["architecture_decisions"] == nil || taskCtx["reference_files"] == nil {
+		t.Fatalf("task context patch/get failed: %#v", taskCtx)
+	}
+}
+
 func postJSON[T any](t *testing.T, u string, body map[string]any) T {
 	t.Helper()
 	data, _ := json.Marshal(body)
@@ -1129,6 +1338,40 @@ func postJSON[T any](t *testing.T, u string, body map[string]any) T {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func postJSONArray[T any](t *testing.T, u string, body any) T {
+	t.Helper()
+	data, _ := json.Marshal(body)
+	resp, err := http.Post(u, "application/json; charset=utf-8", bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		t.Fatalf("POST %s -> %d %s", u, resp.StatusCode, string(raw))
+	}
+	var out T
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func postJSONArrayRaw(t *testing.T, u string, body any, expectedStatus int) []byte {
+	t.Helper()
+	data, _ := json.Marshal(body)
+	resp, err := http.Post(u, "application/json; charset=utf-8", bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != expectedStatus {
+		t.Fatalf("POST %s -> %d %s", u, resp.StatusCode, string(raw))
+	}
+	return raw
 }
 
 func postNoBodyJSON[T any](t *testing.T, u string) T {

@@ -88,6 +88,12 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 	memory, _ := a.getNodeMemory(ctx, nodeID)
 	// Fetch recent runs
 	runs, _ := a.listNodeRuns(ctx, nodeID, 5)
+	latestResultPayload := map[string]any{}
+	if len(runs) > 0 {
+		if structured := asAnyMap(runs[0]["structured_result"]); structured != nil {
+			latestResultPayload = structured
+		}
+	}
 
 	return jsonMap{
 		"task": jsonMap{
@@ -119,12 +125,13 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 			"kind":                node["kind"],
 			"version":             node["version"],
 		},
-		"memory":        memory,
-		"recent_runs":   runs,
-		"siblings":      siblings,
-		"ancestors":     ancestors,
-		"recent_events": recentEvents,
-		"remaining":     remaining,
+		"memory":                memory,
+		"recent_runs":           runs,
+		"latest_result_payload": latestResultPayload,
+		"siblings":              siblings,
+		"ancestors":             ancestors,
+		"recent_events":         recentEvents,
+		"remaining":             remaining,
 	}, nil
 }
 
@@ -144,9 +151,20 @@ func limitWithFallback(limit, fallback int) int {
 }
 
 func orderedExecutableLeaves(nodes []jsonMap) []jsonMap {
+	hasChildren := make(map[string]bool, len(nodes))
+	for _, node := range nodes {
+		parentID := asString(node["parent_node_id"])
+		if parentID != "" {
+			hasChildren[parentID] = true
+		}
+	}
 	leaves := make([]jsonMap, 0, len(nodes))
 	for _, node := range nodes {
 		if asString(node["kind"]) == "group" {
+			continue
+		}
+		if hasChildren[asString(node["id"])] {
+			// 兼容历史脏数据：kind=leaf 但已存在子节点，不应再视为可执行叶子。
 			continue
 		}
 		leaves = append(leaves, node)
@@ -199,6 +217,21 @@ func (a *App) listWorkItems(ctx context.Context, status string, includeClaimed b
 		return nil, err
 	}
 	return scanRows(rows)
+}
+
+func buildWorkItemSummary(item jsonMap) jsonMap {
+	return jsonMap{
+		"id":          item["id"],
+		"title":       item["title"],
+		"status":      item["status"],
+		"task_id":     item["task_id"],
+		"task_title":  item["task_title"],
+		"kind":        item["kind"],
+		"instruction": item["instruction"],
+		"path":        item["path"],
+		"estimate":    item["estimate"],
+		"sort_order":  item["sort_order"],
+	}
 }
 
 func (a *App) search(ctx context.Context, q, kind string, limit int) (jsonMap, error) {

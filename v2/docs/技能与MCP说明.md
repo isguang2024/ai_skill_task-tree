@@ -56,7 +56,7 @@ V2 当前 MCP 主要覆盖五大类。
 
 - `task_tree_list_tasks`
 - `task_tree_get_task`
-- `task_tree_create_task`
+- `task_tree_create_task`（支持 `dry_run` 预演）
 - `task_tree_update_task`
 - `task_tree_delete_task`
 - `task_tree_restore_task`
@@ -66,16 +66,17 @@ V2 当前 MCP 主要覆盖五大类。
 
 ### 阶段与节点
 
-- `task_tree_create_node`
+- `task_tree_create_node`（支持 `depends_on_keys`）
+- `task_tree_batch_create_nodes`（事务原子）
 - `task_tree_list_nodes`
 - `task_tree_list_nodes_summary`
 - `task_tree_focus_nodes`
 - `task_tree_get_node`
-- `task_tree_update_node`
+- `task_tree_update_node`（支持 `depends_on_keys`）
 - `task_tree_reorder_nodes`
 - `task_tree_move_node`
 - `task_tree_progress`
-- `task_tree_complete`
+- `task_tree_complete`（支持 `result_payload`，checkpoint 可强校验）
 - `task_tree_block_node`
 - `task_tree_claim`
 - `task_tree_release`
@@ -86,6 +87,7 @@ V2 当前 MCP 主要覆盖五大类。
 
 - `task_tree_list_stages`
 - `task_tree_create_stage`
+- `task_tree_batch_create_stages`
 - `task_tree_activate_stage`
 
 ### Run 与上下文
@@ -100,12 +102,29 @@ V2 当前 MCP 主要覆盖五大类。
 ### 上下文与搜索
 
 - `task_tree_resume`
+- `task_tree_next_node`
 - `task_tree_get_remaining`
 - `task_tree_get_resume_context`
 - `task_tree_list_events`
 - `task_tree_search`
+- `task_tree_smart_search`
 - `task_tree_work_items`
 - `task_tree_sweep_leases`
+- `task_tree_tree_view`
+- `task_tree_import_plan`
+- `task_tree_get_task_context`
+- `task_tree_patch_task_context`
+- `task_tree_patch_node_memory`
+- `task_tree_rebuild_index`
+
+### 收尾与总结
+
+- `task_tree_wrapup`（写入任务收尾总结）
+- `task_tree_get_wrapup`（读取任务收尾总结）
+
+### 节点执行
+
+- `task_tree_claim_and_start_run`（领取 + 开始运行，2→1 合并）
 
 ### 产物
 
@@ -117,20 +136,26 @@ V2 当前 MCP 主要覆盖五大类。
 
 - [backend/docs/mcp-open-manifest.txt](../backend/docs/mcp-open-manifest.txt)
 
+短别名（与旧名并存）：
+
+- `task_tree.batch_create_nodes`
+- `task_tree.activate_stage`
+- `task_tree.list_nodes_summary`
+
 ## 4. 当前哪些能力不是 MCP 工具
 
-下面这些能力在 V2 已经存在，但当前主要通过 HTTP 提供：
+下面这些能力在 V2 已经存在，但当前仅通过 HTTP 提供，**没有**对应 MCP 工具：
 
-- Memory 读写
+- Stage/Task 的 memory 原生 patch（manual_note/full patch）—— `PATCH /v1/stages/{id}/memory`、`PATCH /v1/tasks/{id}/memory`
+- 节点 memory 手动快照 —— `POST /v1/nodes/{id}/memory/snapshot`
 - 部分 overview/read model 增强字段
 
-也就是说：
+**已有 MCP 工具的能力**（不再需要 HTTP）：
 
-- Run 和节点 context 已有 MCP
-- Memory 仍以 HTTP 为主
-- 前端可以直接用，HTTP 客户端也可以直接用
-
-如果你在写技能或自动化，不要假设这些能力已经能通过 MCP 直接调用。
+- 节点 Memory 结构化写入：`task_tree_patch_node_memory`
+- Run 创建、日志、结束：`task_tree_start_run` / `task_tree_append_run_log` / `task_tree_finish_run`
+- 任务上下文快照读写：`task_tree_get_task_context` / `task_tree_patch_task_context`
+- 收尾总结：`task_tree_wrapup` / `task_tree_get_wrapup`
 
 ## 4.1 Memory 的推荐使用方式
 
@@ -163,3 +188,14 @@ V2 里的 Memory 不应该只被当成“人工备注框”。
 ## 6. 文档同步约定
 
 如果你改动了技能、MCP 地址、端口、能力边界或导航入口，请同步更新这份文档和项目说明页，保证说明文件始终和最新状态一致。
+
+并且同步规则不只针对 `SKILL.md`：`skill/docs/` 下文档也要一起同步到全局目录。
+
+- 本地源：
+  - `./skill/SKILL.md`
+  - `./skill/docs/task-tree-api.md`
+  - `./skill/docs/task-tree-best-practices.md`
+  - `./skill/docs/task-tree-tools.md`
+- 全局目标：
+  - `C:\Users\Administrator\.claude\skills\task-tree\`
+  - `C:\Users\Administrator\.codex\skills\task-tree\`

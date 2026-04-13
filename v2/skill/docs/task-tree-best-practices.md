@@ -33,7 +33,7 @@
 
 1. **一次创建多个**：用 `batch_create_nodes` 而不是多次 `create_node`
 2. **先创建 group，再往里填 leaf**：指定 `parent_node_id` 构建层级
-3. **声明依赖**：用 `depends_on: [node_id]`，系统会自动阻塞未就绪的节点
+3. **声明依赖**：优先用 `depends_on_keys`（创建期无需先拿 node_id），也可用 `depends_on: [node_id]`
 4. **阶段可选**：简单任务不需要 Stage，直接用节点树就够了
 5. **create_task 可一步到位**：`stages` + `nodes` 都可以在创建任务时传入
 
@@ -157,6 +157,14 @@ smart_search(q: "用户登录")
 
 **错误**：只调 `progress(1.0)` — 状态仍是 running
 **正确**：调 `complete(message, memory)` — 明确标记 done，生成事件，解锁下一节点
+
+## checkpoint 门禁节点
+
+当节点是 `kind=leaf + role=checkpoint` 且配置了 `metadata.checkpoint_spec.required_commands`：
+
+- `complete` 必须提供 `result_payload.commands_verified`
+- 且 `commands_verified` 必须覆盖 `required_commands`
+- 否则服务端会返回 `409`，节点不会完成
 
 ## 遇到阻塞
 

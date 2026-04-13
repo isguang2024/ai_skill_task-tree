@@ -398,6 +398,287 @@ func TestMCPCreateTaskWithInitialNodeTree(t *testing.T) {
 	}
 }
 
+func TestMCPArrayArgsStringCompatibility(t *testing.T) {
+	t.Setenv("TTS_DB_PATH", filepath.Join(t.TempDir(), "mcp-array-compat.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := &mcpServer{app: app}
+
+	stagesJSON := `[{"title":"阶段一","node_key":"S1"},{"title":"阶段二","node_key":"S2"}]`
+	nodesJSON := `[{"title":"种子节点","node_key":"N1"}]`
+	createResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      21,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_create_task",
+			"arguments": map[string]any{
+				"title":    "字符串数组兼容",
+				"task_key": "STRARR",
+				"stages":   stagesJSON,
+				"nodes":    nodesJSON,
+			},
+		},
+	}))
+	if createResp == nil || createResp.Error != nil {
+		t.Fatalf("create_task with string arrays failed: %#v", createResp)
+	}
+	createResult, _ := createResp.Result.(map[string]any)
+	createContent, _ := createResult["content"].([]map[string]any)
+	if len(createContent) == 0 {
+		t.Fatal("missing create_task content")
+	}
+	var created map[string]any
+	if err := json.Unmarshal([]byte(createContent[0]["text"].(string)), &created); err != nil {
+		t.Fatal(err)
+	}
+	taskID := stringValue(created["id"])
+	if taskID == "" {
+		t.Fatal("missing task id")
+	}
+
+	stagesResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      22,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_list_stages",
+			"arguments": map[string]any{
+				"task_id": taskID,
+			},
+		},
+	}))
+	if stagesResp == nil || stagesResp.Error != nil {
+		t.Fatalf("list_stages failed: %#v", stagesResp)
+	}
+	stagesResult, _ := stagesResp.Result.(map[string]any)
+	stageContent, _ := stagesResult["content"].([]map[string]any)
+	var stageItems []map[string]any
+	if len(stageContent) == 0 || json.Unmarshal([]byte(stageContent[0]["text"].(string)), &stageItems) != nil {
+		t.Fatalf("invalid stages payload: %#v", stagesResult)
+	}
+	if len(stageItems) != 2 {
+		t.Fatalf("expected 2 stages, got %d", len(stageItems))
+	}
+	stage2ID := stringValue(stageItems[1]["id"])
+	if stage2ID == "" {
+		t.Fatal("missing stage2 id")
+	}
+
+	batchNodesJSON := `[{"title":"挂到阶段二","node_key":"G2","stage_node_id":"` + stage2ID + `"}]`
+	batchResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      23,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_batch_create_nodes",
+			"arguments": map[string]any{
+				"task_id": taskID,
+				"nodes":   batchNodesJSON,
+			},
+		},
+	}))
+	if batchResp == nil || batchResp.Error != nil {
+		t.Fatalf("batch_create_nodes with string array failed: %#v", batchResp)
+	}
+	batchResult, _ := batchResp.Result.(map[string]any)
+	batchContent, _ := batchResult["content"].([]map[string]any)
+	var batchCreated map[string]any
+	if len(batchContent) == 0 || json.Unmarshal([]byte(batchContent[0]["text"].(string)), &batchCreated) != nil {
+		t.Fatalf("invalid batch payload: %#v", batchResult)
+	}
+	createdItems, _ := batchCreated["created"].([]any)
+	if len(createdItems) != 1 {
+		t.Fatalf("expected 1 created node, got %d", len(createdItems))
+	}
+	createdNode, _ := createdItems[0].(map[string]any)
+	if stringValue(createdNode["parent_node_id"]) != stage2ID {
+		t.Fatalf("batch node parent should be stage2, got %v", createdNode["parent_node_id"])
+	}
+}
+
+func TestMCPExtendedToolsAndAliases(t *testing.T) {
+	t.Setenv("TTS_DB_PATH", filepath.Join(t.TempDir(), "mcp-extended.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := &mcpServer{app: app}
+
+	dryResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      31,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_create_task",
+			"arguments": map[string]any{
+				"title":    "MCP Dry Run",
+				"task_key": "MCPDRY",
+				"dry_run":  true,
+				"stages": []map[string]any{
+					{"title": "阶段A", "node_key": "S1"},
+				},
+				"nodes": []map[string]any{
+					{"title": "步骤1", "node_key": "N1"},
+					{"title": "步骤2", "node_key": "N2", "depends_on_keys": []string{"N1"}},
+				},
+			},
+		},
+	}))
+	if dryResp == nil || dryResp.Error != nil {
+		t.Fatalf("mcp dry-run failed: %#v", dryResp)
+	}
+	dryResult, _ := dryResp.Result.(map[string]any)
+	dryContentItems, _ := dryResult["content"].([]map[string]any)
+	if len(dryContentItems) == 0 {
+		t.Fatalf("missing dry-run content: %#v", dryResp.Result)
+	}
+	var dryPayload map[string]any
+	if err := json.Unmarshal([]byte(stringValue(dryContentItems[0]["text"])), &dryPayload); err != nil {
+		t.Fatalf("invalid dry-run payload: %v", err)
+	}
+	if dryPayload["dry_run"] != true || dryPayload["validated"] != true {
+		t.Fatalf("unexpected dry-run payload: %#v", dryPayload)
+	}
+
+	createResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      32,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_create_task",
+			"arguments": map[string]any{
+				"title":    "MCP 别名任务",
+				"task_key": "MCPALIAS",
+				"stages": []map[string]any{
+					{"title": "阶段一", "node_key": "S1", "activate": true},
+					{"title": "阶段二", "node_key": "S2"},
+				},
+			},
+		},
+	}))
+	if createResp == nil || createResp.Error != nil {
+		t.Fatalf("create task failed: %#v", createResp)
+	}
+	var created map[string]any
+	createResult, _ := createResp.Result.(map[string]any)
+	createContent, _ := createResult["content"].([]map[string]any)
+	if len(createContent) == 0 || json.Unmarshal([]byte(createContent[0]["text"].(string)), &created) != nil {
+		t.Fatalf("invalid create payload: %#v", createResp.Result)
+	}
+	taskID := stringValue(created["id"])
+	if taskID == "" {
+		t.Fatal("missing task id")
+	}
+
+	stagesResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      33,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_list_stages",
+			"arguments": map[string]any{
+				"task_id": taskID,
+			},
+		},
+	}))
+	if stagesResp == nil || stagesResp.Error != nil {
+		t.Fatalf("list stages failed: %#v", stagesResp)
+	}
+	var stageItems []map[string]any
+	stagesResult, _ := stagesResp.Result.(map[string]any)
+	stagesContent, _ := stagesResult["content"].([]map[string]any)
+	if len(stagesContent) == 0 || json.Unmarshal([]byte(stagesContent[0]["text"].(string)), &stageItems) != nil || len(stageItems) < 2 {
+		t.Fatalf("invalid stages payload: %#v", stagesResp.Result)
+	}
+	stage2ID := stringValue(stageItems[1]["id"])
+
+	aliasActivateResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      34,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree.activate_stage",
+			"arguments": map[string]any{
+				"task_id":       taskID,
+				"stage_node_id": stage2ID,
+			},
+		},
+	}))
+	if aliasActivateResp == nil || aliasActivateResp.Error != nil {
+		t.Fatalf("alias activate failed: %#v", aliasActivateResp)
+	}
+	if !strings.Contains(mustJSONString(t, aliasActivateResp.Result), "git_suggestion") {
+		t.Fatalf("activate result missing git_suggestion: %#v", aliasActivateResp.Result)
+	}
+
+	patchCtxResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      35,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_patch_task_context",
+			"arguments": map[string]any{
+				"task_id":                taskID,
+				"architecture_decisions": []string{"统一走 gin 路由"},
+				"reference_files":        []string{"backend/internal/api/router/router.go"},
+				"context_doc_text":       "social_token TTL = 5m",
+			},
+		},
+	}))
+	if patchCtxResp == nil || patchCtxResp.Error != nil {
+		t.Fatalf("patch task context failed: %#v", patchCtxResp)
+	}
+	getCtxResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      36,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_get_task_context",
+			"arguments": map[string]any{
+				"task_id": taskID,
+			},
+		},
+	}))
+	if getCtxResp == nil || getCtxResp.Error != nil {
+		t.Fatalf("get task context failed: %#v", getCtxResp)
+	}
+	if !strings.Contains(mustJSONString(t, getCtxResp.Result), "architecture_decisions") {
+		t.Fatalf("task context payload missing architecture_decisions: %#v", getCtxResp.Result)
+	}
+
+	treeResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      37,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_tree_view",
+			"arguments": map[string]any{
+				"task_id": taskID,
+			},
+		},
+	}))
+	if treeResp == nil || treeResp.Error != nil {
+		t.Fatalf("tree view failed: %#v", treeResp)
+	}
+	treeResult, _ := treeResp.Result.(map[string]any)
+	treeContent, _ := treeResult["content"].([]map[string]any)
+	if len(treeContent) == 0 {
+		t.Fatalf("missing tree view content: %#v", treeResp.Result)
+	}
+	var treePayload map[string]any
+	if err := json.Unmarshal([]byte(stringValue(treeContent[0]["text"])), &treePayload); err != nil {
+		t.Fatalf("invalid tree view payload: %v", err)
+	}
+	if treePayload["lines"] == nil {
+		t.Fatalf("tree view missing lines field: %#v", treePayload)
+	}
+}
+
 func mustRPCRequest(t *testing.T, payload map[string]any) []byte {
 	t.Helper()
 	data, err := json.Marshal(payload)

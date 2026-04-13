@@ -215,6 +215,41 @@ func (a *App) patchTaskMemoryManualNote(ctx context.Context, taskID, note string
 	return out, err
 }
 
+func (a *App) patchTaskContext(ctx context.Context, taskID string, body taskContextPatchBody) (jsonMap, error) {
+	var out jsonMap
+	err := a.withTx(ctx, func(txCtx context.Context) error {
+		mem, err := a.getTaskMemory(txCtx, taskID)
+		if err != nil {
+			return err
+		}
+		if err := ensureExpectedVersion(mem, body.ExpectedVersion, "task_memory"); err != nil {
+			return err
+		}
+		setClauses := []string{"updated_at = ?", "version = version + 1"}
+		args := []any{utcNowISO()}
+		if body.ArchitectureDecisions != nil {
+			setClauses = append(setClauses, "architecture_decisions_json = ?")
+			args = append(args, mustJSON(uniqueStrings(*body.ArchitectureDecisions)))
+		}
+		if body.ReferenceFiles != nil {
+			setClauses = append(setClauses, "reference_files_json = ?")
+			args = append(args, mustJSON(uniqueStrings(*body.ReferenceFiles)))
+		}
+		if body.ContextDocText != nil {
+			setClauses = append(setClauses, "context_doc_text = ?")
+			args = append(args, strings.TrimSpace(*body.ContextDocText))
+		}
+		args = append(args, taskID)
+		query := "UPDATE task_memory_current SET " + strings.Join(setClauses, ", ") + " WHERE task_id = ?"
+		if _, err := a.execContext(txCtx, query, args...); err != nil {
+			return err
+		}
+		out, err = a.getTaskMemory(txCtx, taskID)
+		return err
+	})
+	return out, err
+}
+
 func (a *App) initNodeMemory(ctx context.Context, node jsonMap) (jsonMap, error) {
 	now := utcNowISO()
 	payload := jsonMap{
@@ -271,8 +306,8 @@ func (a *App) initTaskMemory(ctx context.Context, task jsonMap) (jsonMap, error)
 	remaining, _ := a.getRemaining(ctx, asString(task["id"]))
 	if _, err := a.execContext(ctx, `INSERT INTO task_memory_current(
 			task_id, current_stage_node_id, summary_text, conclusions_json, decisions_json, risks_json,
-			blockers_json, next_actions_json, evidence_json, manual_note_text, source_snapshot_ref, created_at, updated_at
-		) VALUES (?, ?, ?, '[]', '[]', '[]', '[]', '[]', '[]', '', NULL, ?, ?)`,
+			blockers_json, next_actions_json, evidence_json, manual_note_text, source_snapshot_ref, architecture_decisions_json, reference_files_json, context_doc_text, created_at, updated_at
+		) VALUES (?, ?, ?, '[]', '[]', '[]', '[]', '[]', '[]', '', NULL, '[]', '[]', '', ?, ?)`,
 		task["id"], nullable(asString(task["current_stage_node_id"])), defaultTaskMemorySummary(task, nil, remaining), now, now,
 	); err != nil {
 		return nil, err
@@ -382,13 +417,16 @@ func (a *App) refreshTaskMemory(ctx context.Context, taskID string) (jsonMap, er
 		}
 		payload := mergeTaskMemory(task, currentStage, stageMemories, remaining)
 		payload["manual_note_text"] = asString(current["manual_note_text"])
+		payload["architecture_decisions"] = stringSliceFromAny(current["architecture_decisions"])
+		payload["reference_files"] = stringSliceFromAny(current["reference_files"])
+		payload["context_doc_text"] = asString(current["context_doc_text"])
 		if _, err := a.execContext(txCtx, `UPDATE task_memory_current
 			SET current_stage_node_id = ?, summary_text = ?, conclusions_json = ?, decisions_json = ?, risks_json = ?,
-			    blockers_json = ?, next_actions_json = ?, evidence_json = ?, manual_note_text = ?, updated_at = ?, version = version + 1
+			    blockers_json = ?, next_actions_json = ?, evidence_json = ?, manual_note_text = ?, architecture_decisions_json = ?, reference_files_json = ?, context_doc_text = ?, updated_at = ?, version = version + 1
 			WHERE task_id = ?`,
 			nullable(stageNodeID), payload["summary_text"], mustJSON(payload["conclusions"]), mustJSON(payload["decisions"]),
 			mustJSON(payload["risks"]), mustJSON(payload["blockers"]), mustJSON(payload["next_actions"]), mustJSON(payload["evidence"]),
-			payload["manual_note_text"], utcNowISO(), taskID,
+			payload["manual_note_text"], mustJSON(payload["architecture_decisions"]), mustJSON(payload["reference_files"]), payload["context_doc_text"], utcNowISO(), taskID,
 		); err != nil {
 			return err
 		}

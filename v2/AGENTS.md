@@ -80,6 +80,13 @@ go run ./cmd/task-tree-service serve
    - 修改或新增 `skill/SKILL.md` 内容后，同时更新：
      - `C:\Users\Administrator\.claude\skills\task-tree\SKILL.md`（Claude Code 全局）
      - `C:\Users\Administrator\.codex\skills\task-tree\SKILL.md`（Codex 全局）
+   - **除 `SKILL.md` 外，`skill/docs/` 下的文档也必须同步**（至少包括）：
+     - `task-tree-api.md`
+     - `task-tree-best-practices.md`
+     - `task-tree-tools.md`
+     - 同步目标：
+       - `C:\Users\Administrator\.claude\skills\task-tree\docs\`
+       - `C:\Users\Administrator\.codex\skills\task-tree\docs\`
    - 新增 HTTP 接口时在文档中说明，同步更新全局技能的”完整 HTTP API”部分
    - 新增 MCP 工具时，同步更新全局技能的”完整工具清单”和”工具速查表”部分
 
@@ -88,18 +95,20 @@ go run ./cmd/task-tree-service serve
 ### 已同时提供 HTTP + MCP 的核心能力
 
 - 项目：创建、读取、列表、更新、删除、概览
-- 任务：创建、读取、列表、更新、回收站、状态流转
-- 阶段：列出、创建、激活
-- 节点：创建、读取、列表、摘要读取、focus 读取、更新、排序、移动、进度、完成、阻塞、claim、release、retype、状态流转
-- 上下文：remaining、resume、resume-context、events、search、work-items
+- 任务：创建、读取、列表、更新、回收站、状态流转、`dry_run` 预演
+- 阶段：列出、创建、批量创建、激活
+- 节点：创建、批量创建、读取、列表、摘要读取、focus 读取、更新、排序、移动、进度、完成、阻塞、claim、release、retype、状态流转
+- 上下文：remaining、resume、next-node、resume-context、task-context、events、search、work-items、tree-view、import-plan
 - 产物：列表、链接型产物、base64 上传
+- Run 执行层：start/list/get/finish/log 全量 MCP 对齐
+- 节点 context 读模型：MCP 已对齐
 
 ### 当前以 HTTP 为主的能力
 
-- Run 执行层：开始 run、结束 run、追加 run 日志、读取 run、列出节点 runs
-- Memory / 读模型增强：任务、阶段、节点 memory 读写；节点 context；overview 衍生字段
+- Memory 原生 PATCH 能力：任务、阶段、节点 memory 的 manual_note/full patch（其中 `task_tree_patch_node_memory` 已有 MCP）
+- 部分 read-model 增强字段与前端展示细节
 
-这部分已经有 HTTP 路由和前端接入，但当前 MCP 还没有完全对齐，文档必须如实说明。
+这部分已经有 HTTP 路由和前端接入，文档必须如实说明边界。
 
 ## DXT / Skill 对应
 

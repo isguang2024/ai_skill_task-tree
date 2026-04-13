@@ -28,10 +28,7 @@
 
 ### 可以暂时作为 HTTP only 的增强能力
 
-- Run 执行层
-- Memory 读写
-- 节点 context
-- 读模型增强字段
+- Node/Stage/Task 级别的 Memory 原生 PATCH 接口（manual_note、full patch）
 
 但这类能力必须在文档里明确标注，不能写成“已经有 MCP 工具”。
 
@@ -43,18 +40,22 @@
 | 项目创建 / 更新 / 删除 | `POST /v1/projects` `PATCH /v1/projects/{id}` `DELETE /v1/projects/{id}` | `task_tree_create_project` `task_tree_update_project` `task_tree_delete_project` | 已对齐 |
 | 项目概览 | `GET /v1/projects/{id}/overview` | `task_tree_project_overview` | 已对齐 |
 | 任务列表 / 详情 | `GET /v1/tasks` `GET /v1/tasks/{id}` | `task_tree_list_tasks` `task_tree_get_task` | 已对齐 |
-| 任务创建 / 更新 | `POST /v1/tasks` `PATCH /v1/tasks/{id}` | `task_tree_create_task` `task_tree_update_task` | 已对齐 |
+| 任务创建 / 更新 | `POST /v1/tasks` `PATCH /v1/tasks/{id}` | `task_tree_create_task`（支持 `dry_run`） `task_tree_update_task` | 已对齐 |
 | 任务回收站 | `DELETE /v1/tasks/{id}` `POST /v1/tasks/{id}/restore` `DELETE /v1/tasks/{id}/hard` `POST /admin/empty-trash` | `task_tree_delete_task` `task_tree_restore_task` `task_tree_hard_delete_task` `task_tree_empty_trash` | 已对齐 |
 | 任务状态流转 | `POST /v1/tasks/{id}/transition` | `task_tree_transition_task` | 已对齐 |
-| 阶段列表 / 创建 / 激活 | `GET /v1/tasks/{id}/stages` `POST /v1/tasks/{id}/stages` `POST /v1/tasks/{id}/stages/{stageNodeId}/activate` | `task_tree_list_stages` `task_tree_create_stage` `task_tree_activate_stage` | 已对齐 |
+| 阶段列表 / 创建 / 批量创建 / 激活 | `GET /v1/tasks/{id}/stages` `POST /v1/tasks/{id}/stages` `POST /v1/tasks/{id}/stages/batch` `POST /v1/tasks/{id}/stages/{stageNodeId}/activate` | `task_tree_list_stages` `task_tree_create_stage` `task_tree_batch_create_stages` `task_tree_activate_stage` | 已对齐 |
 | 节点列表 / 摘要 / focus / 详情 | `GET /v1/tasks/{id}/nodes` `GET /v1/nodes/{id}` | `task_tree_list_nodes` `task_tree_list_nodes_summary` `task_tree_focus_nodes` `task_tree_get_node` | 已对齐 |
-| 节点创建 / 更新 / 排序 / 移动 | `POST /v1/tasks/{id}/nodes` `PATCH /v1/nodes/{id}` `POST /v1/nodes/reorder` `POST /v1/nodes/{id}/move` | `task_tree_create_node` `task_tree_update_node` `task_tree_reorder_nodes` `task_tree_move_node` | 已对齐 |
+| 节点创建 / 更新 / 排序 / 移动 | `POST /v1/tasks/{id}/nodes` `PATCH /v1/nodes/{id}` `POST /v1/nodes/reorder` `POST /v1/nodes/{id}/move` | `task_tree_create_node`（支持 `depends_on_keys`） `task_tree_update_node`（支持 `depends_on_keys`） `task_tree_reorder_nodes` `task_tree_move_node` | 已对齐 |
+| 节点批量创建 | `POST /v1/tasks/{id}/nodes/batch` | `task_tree_batch_create_nodes` | 已对齐（事务原子） |
 | 节点推进 / 阻塞 / claim / release / retype / 状态流转 | `POST /.../progress` `.../complete` `.../block` `.../claim` `.../release` `.../retype` `.../transition` | `task_tree_progress` `task_tree_complete` `task_tree_block_node` `task_tree_claim` `task_tree_release` `task_tree_retype_node` `task_tree_transition_node` | 已对齐 |
 | 上下文 / 搜索 | `GET /v1/tasks/{id}/remaining` `.../resume` `.../context` `GET /v1/events` `GET /v1/search` `GET /v1/work-items` | `task_tree_get_remaining` `task_tree_resume` `task_tree_get_resume_context` `task_tree_list_events` `task_tree_search` `task_tree_work_items` | 已对齐 |
+| 任务上下文快照 | `GET/PATCH /v1/tasks/{id}/context` | `task_tree_get_task_context` `task_tree_patch_task_context` | 已对齐 |
+| 树视图 / 计划导入 | `GET /v1/tasks/{id}/tree-view` `POST /v1/import-plan` | `task_tree_tree_view` `task_tree_import_plan` | 已对齐 |
 | 产物 | `GET /v1/tasks/{id}/artifacts` `POST /v1/tasks/{id}/artifacts` `POST /v1/tasks/{id}/artifacts/upload` | `task_tree_list_artifacts` `task_tree_create_artifact` `task_tree_upload_artifact` | 已对齐 |
 | Run 执行层 | `POST/GET /v1/nodes/{nodeId}/runs` `GET /v1/runs/{runId}` `POST /v1/runs/{runId}/finish` `POST /v1/runs/{runId}/logs` | `task_tree_start_run` `task_tree_list_node_runs` `task_tree_get_run` `task_tree_finish_run` `task_tree_append_run_log` | 已对齐 |
-| Memory | `GET/PATCH /v1/tasks/{id}/memory` `GET/PATCH /v1/stages/{id}/memory` `GET/PATCH /v1/nodes/{id}/memory` | 无 | HTTP only |
+| Memory（原生 patch） | `GET/PATCH /v1/tasks/{id}/memory` `GET/PATCH /v1/stages/{id}/memory` `GET/PATCH /v1/nodes/{id}/memory` | 无（但 `task_tree_patch_node_memory` 存在） | 部分 HTTP only |
 | 节点 context 读模型 | `GET /v1/nodes/{id}/context` | `task_tree_get_node_context` | 已对齐 |
+| 工具短别名 | N/A（MCP 能力） | `task_tree.batch_create_nodes` `task_tree.activate_stage` `task_tree.list_nodes_summary` | MCP 已提供 |
 
 ## 高效读取策略
 
@@ -69,16 +70,15 @@
 1. `task_tree_list_tasks` 或 `task_tree_project_overview`
 2. `task_tree_focus_nodes` 或 `task_tree_list_nodes_summary`
 3. `task_tree_get_node`
-4. `task_tree_get_resume_context`
-5. `task_tree_list_events`
-6. `task_tree_list_artifacts`
+4. `task_tree_get_node_context` 或 `task_tree_get_resume_context`
+5. `task_tree_get_task_context`（需要任务级决策/参考文件时）
+6. `task_tree_list_events`
+7. `task_tree_list_artifacts`
 
 ### 需要 HTTP 补充的场景
 
-- 读取某个节点最近 runs
-- 给 run 追加日志
-- 展示或编辑 task/stage/node memory
-- 拉节点 context 的聚合读模型
+- 编辑 task/stage/node memory 的 `manual_note` 或 full patch
+- 任务/阶段 memory 的原生 PATCH（当前仍是 HTTP only）
 
 ## Streamable HTTP MCP
 

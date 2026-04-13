@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -128,6 +129,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 	if err := json.Unmarshal(params, &payload); err != nil {
 		return nil, err
 	}
+	payload.Name = canonicalToolName(payload.Name)
 	ctx := context.Background()
 	var result any
 	var err error
@@ -155,7 +157,15 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			Cursor:    stringArg(payload.Arguments, "event_cursor"),
 		})
 	case "task_tree_list_tasks":
-		result, err = s.app.listTasksByProject(ctx, stringArg(payload.Arguments, "status"), stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "project_id"), boolArg(payload.Arguments, "include_deleted"), false, intArg(payload.Arguments, "limit", 100))
+		var items []jsonMap
+		items, err = s.app.listTasksByProject(ctx, stringArg(payload.Arguments, "status"), stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "project_id"), boolArg(payload.Arguments, "include_deleted"), false, intArg(payload.Arguments, "limit", 100))
+		if err == nil {
+			summaries := make([]jsonMap, 0, len(items))
+			for _, item := range items {
+				summaries = append(summaries, buildTaskSummary(item))
+			}
+			result = summaries
+		}
 	case "task_tree_list_projects":
 		result, err = s.app.listProjects(ctx, stringArg(payload.Arguments, "q"), boolArg(payload.Arguments, "include_deleted"), intArg(payload.Arguments, "limit", 100))
 	case "task_tree_get_project":
@@ -187,6 +197,16 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 	case "task_tree_get_task":
 		result, err = s.app.getTask(ctx, stringArg(payload.Arguments, "task_id"), boolArg(payload.Arguments, "include_deleted"))
 	case "task_tree_create_task":
+		var stages []stageCreate
+		stages, err = stageCreatesArg(payload.Arguments, "stages")
+		if err != nil {
+			break
+		}
+		var seeds []taskNodeSeed
+		seeds, err = taskNodeSeedsArg(payload.Arguments, "nodes")
+		if err != nil {
+			break
+		}
 		result, err = s.app.createTask(ctx, taskCreate{
 			TaskKey:         optStringArg(payload.Arguments, "task_key"),
 			Title:           stringArg(payload.Arguments, "title"),
@@ -196,7 +216,9 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			SourceTool:      optStringArg(payload.Arguments, "source_tool"),
 			SourceSessionID: optStringArg(payload.Arguments, "source_session_id"),
 			Tags:            stringSliceArg(payload.Arguments, "tags"),
-			Nodes:           taskNodeSeedsArg(payload.Arguments, "nodes"),
+			Nodes:           seeds,
+			Stages:          stages,
+			DryRun:          optBoolArg(payload.Arguments, "dry_run"),
 			Metadata:        mapArg(payload.Arguments, "metadata"),
 			CreatedByType:   optStringArg(payload.Arguments, "created_by_type"),
 			CreatedByID:     optStringArg(payload.Arguments, "created_by_id"),
@@ -221,6 +243,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			Instruction:        optStringArg(payload.Arguments, "instruction"),
 			AcceptanceCriteria: stringSliceArg(payload.Arguments, "acceptance_criteria"),
 			DependsOn:          stringSliceArg(payload.Arguments, "depends_on"),
+			DependsOnKeys:      stringSliceArg(payload.Arguments, "depends_on_keys"),
 			Estimate:           optFloatArg(payload.Arguments, "estimate"),
 			Status:             optStringArg(payload.Arguments, "status"),
 			SortOrder:          optIntArg(payload.Arguments, "sort_order"),
@@ -230,7 +253,15 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			CreationReason:     optStringArg(payload.Arguments, "creation_reason"),
 		})
 	case "task_tree_list_stages":
-		result, err = s.app.listStages(ctx, stringArg(payload.Arguments, "task_id"))
+		var items []jsonMap
+		items, err = s.app.listStages(ctx, stringArg(payload.Arguments, "task_id"))
+		if err == nil {
+			summaries := make([]jsonMap, 0, len(items))
+			for _, item := range items {
+				summaries = append(summaries, buildStageSummary(item))
+			}
+			result = jsonMap{"items": summaries}
+		}
 	case "task_tree_create_stage":
 		result, err = s.app.createStage(ctx, stringArg(payload.Arguments, "task_id"), stageCreate{
 			NodeKey:            optStringArg(payload.Arguments, "node_key"),
@@ -243,6 +274,15 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			Activate:           optBoolArg(payload.Arguments, "activate"),
 			ExpectedVersion:    optIntArg(payload.Arguments, "expected_version"),
 		})
+	case "task_tree_batch_create_stages":
+		var stages []stageCreate
+		stages, err = stageCreatesArg(payload.Arguments, "stages")
+		if err != nil {
+			break
+		}
+		var items []jsonMap
+		items, err = s.app.batchCreateStages(ctx, stringArg(payload.Arguments, "task_id"), stages)
+		result = jsonMap{"created": items, "count": len(items)}
 	case "task_tree_activate_stage":
 		result, err = s.app.activateStage(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "stage_node_id"), stageActivate{
 			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
@@ -292,7 +332,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			Cursor:        stringArg(payload.Arguments, "cursor"),
 			SortBy:        stringArg(payload.Arguments, "sort_by"),
 			SortOrder:     stringArg(payload.Arguments, "sort_order"),
-			ViewMode:      stringArgDefault(payload.Arguments, "view_mode", "detail"),
+			ViewMode:      stringArgDefault(payload.Arguments, "view_mode", "summary"),
 			FilterMode:    stringArg(payload.Arguments, "filter_mode"),
 			IncludeHidden: boolArg(payload.Arguments, "include_deleted"),
 		})
@@ -328,6 +368,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			Instruction:        optStringArg(payload.Arguments, "instruction"),
 			AcceptanceCriteria: criteria,
 			DependsOn:          depends,
+			DependsOnKeys:      optStringSliceArg(payload.Arguments, "depends_on_keys"),
 			Estimate:           optFloatArg(payload.Arguments, "estimate"),
 			SortOrder:          optIntArg(payload.Arguments, "sort_order"),
 			ExpectedVersion:    optIntArg(payload.Arguments, "expected_version"),
@@ -384,6 +425,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 			IdempotencyKey:  optStringArg(payload.Arguments, "idempotency_key"),
 			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
 			Memory:          inlineMemory,
+			ResultPayload:   mapArg(payload.Arguments, "result_payload"),
 		})
 	case "task_tree_block_node":
 		result, err = s.app.blockNode(ctx, stringArg(payload.Arguments, "node_id"), blockBody{
@@ -424,12 +466,13 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 	case "task_tree_get_resume_context":
 		result, err = s.app.getResumeContext(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "node_id"), intArg(payload.Arguments, "event_limit", 5))
 	case "task_tree_list_events":
-		result, err = s.app.listEventsScoped(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "node_id"), boolArg(payload.Arguments, "include_descendants"), stringArg(payload.Arguments, "before"), stringArg(payload.Arguments, "after"), intArg(payload.Arguments, "limit", 100), eventListOptions{
+		evLimit := intArg(payload.Arguments, "limit", 20)
+		result, err = s.app.listEventsScoped(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "node_id"), boolArg(payload.Arguments, "include_descendants"), stringArg(payload.Arguments, "before"), stringArg(payload.Arguments, "after"), evLimit, eventListOptions{
 			Types:     stringSliceArg(payload.Arguments, "type"),
 			Query:     stringArg(payload.Arguments, "q"),
 			ViewMode:  stringArg(payload.Arguments, "view_mode"),
 			SortOrder: stringArg(payload.Arguments, "sort_order"),
-			Limit:     intArg(payload.Arguments, "limit", 100),
+			Limit:     evLimit,
 			Cursor:    stringArg(payload.Arguments, "cursor"),
 		})
 	case "task_tree_list_artifacts":
@@ -468,7 +511,15 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 		// 已合并到 smart_search，内部转发
 		result, err = s.app.smartSearch(ctx, stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "kind"), "", intArg(payload.Arguments, "limit", 30))
 	case "task_tree_work_items":
-		result, err = s.app.listWorkItems(ctx, stringArgDefault(payload.Arguments, "status", "ready"), boolArg(payload.Arguments, "include_claimed"), intArg(payload.Arguments, "limit", 50))
+		var items []jsonMap
+		items, err = s.app.listWorkItems(ctx, stringArgDefault(payload.Arguments, "status", "ready"), boolArg(payload.Arguments, "include_claimed"), intArg(payload.Arguments, "limit", 50))
+		if err == nil {
+			summaries := make([]jsonMap, 0, len(items))
+			for _, item := range items {
+				summaries = append(summaries, buildWorkItemSummary(item))
+			}
+			result = jsonMap{"items": summaries}
+		}
 	case "task_tree_patch_node_memory":
 		result, err = s.app.patchNodeMemoryFull(ctx, stringArg(payload.Arguments, "node_id"), memoryFullPatchBody{
 			SummaryText:        optStringArg(payload.Arguments, "summary_text"),
@@ -488,12 +539,21 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 	case "task_tree_smart_search":
 		result, err = s.app.smartSearch(ctx, stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "scope"), stringArg(payload.Arguments, "task_id"), intArg(payload.Arguments, "limit", 20))
 	case "task_tree_batch_create_nodes":
-		nodesRaw, _ := payload.Arguments["nodes"].([]any)
+		nodesRaw, provided, parseErr := anyArrayArg(payload.Arguments, "nodes")
+		if parseErr != nil {
+			err = &appError{Code: 400, Msg: parseErr.Error()}
+			break
+		}
+		if !provided {
+			err = &appError{Code: 400, Msg: "nodes required"}
+			break
+		}
 		bodies := make([]nodeCreate, 0, len(nodesRaw))
 		for _, raw := range nodesRaw {
 			m, ok := raw.(map[string]any)
 			if !ok {
-				continue
+				err = &appError{Code: 400, Msg: "nodes 必须是对象数组"}
+				break
 			}
 			bodies = append(bodies, nodeCreate{
 				ParentNodeID:       optStringArg(m, "parent_node_id"),
@@ -505,6 +565,7 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 				Instruction:        optStringArg(m, "instruction"),
 				AcceptanceCriteria: stringSliceArg(m, "acceptance_criteria"),
 				DependsOn:          stringSliceArg(m, "depends_on"),
+				DependsOnKeys:      stringSliceArg(m, "depends_on_keys"),
 				Estimate:           optFloatArg(m, "estimate"),
 				Status:             optStringArg(m, "status"),
 				SortOrder:          optIntArg(m, "sort_order"),
@@ -514,9 +575,29 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 				CreationReason:     optStringArg(m, "creation_reason"),
 			})
 		}
+		if err != nil {
+			break
+		}
 		var items []jsonMap
 		items, err = s.app.batchCreateNodes(ctx, stringArg(payload.Arguments, "task_id"), bodies)
 		result = jsonMap{"created": items, "count": len(items)}
+	case "task_tree_tree_view":
+		result, err = s.app.treeView(ctx, stringArg(payload.Arguments, "task_id"), optStringArg(payload.Arguments, "stage_node_id"), boolArg(payload.Arguments, "only_executable"))
+	case "task_tree_import_plan":
+		result, err = s.app.importPlan(ctx, importPlanBody{
+			Format: stringArg(payload.Arguments, "format"),
+			Data:   stringArg(payload.Arguments, "data"),
+			Apply:  optBoolArg(payload.Arguments, "apply"),
+		})
+	case "task_tree_patch_task_context":
+		result, err = s.app.patchTaskContext(ctx, stringArg(payload.Arguments, "task_id"), taskContextPatchBody{
+			ArchitectureDecisions: optStringSliceArg(payload.Arguments, "architecture_decisions"),
+			ReferenceFiles:        optStringSliceArg(payload.Arguments, "reference_files"),
+			ContextDocText:        optStringArg(payload.Arguments, "context_doc_text"),
+			ExpectedVersion:       optIntArg(payload.Arguments, "expected_version"),
+		})
+	case "task_tree_get_task_context":
+		result, err = s.app.getTaskMemory(ctx, stringArg(payload.Arguments, "task_id"))
 	case "task_tree_claim_and_start_run":
 		result, err = s.app.claimAndStartRun(ctx, stringArg(payload.Arguments, "node_id"), claimStartBody{
 			Actor:        mustActorArg(payload.Arguments, "actor"),
@@ -537,6 +618,12 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if m, ok := result.(jsonMap); ok {
+		omitEmpty(m)
+	}
+	if items, ok := result.([]jsonMap); ok {
+		omitEmptySlice(items)
 	}
 	text, _ := json.MarshalIndent(result, "", "  ")
 	return map[string]any{
@@ -677,7 +764,8 @@ func mcpTools() []mcpTool {
 				"role":                stringSchema("step/container/stage"),
 				"instruction":         stringSchema("执行说明"),
 				"acceptance_criteria": arrayStringSchema("验收标准"),
-				"depends_on":         arrayStringSchema("前置依赖节点 ID 列表，这些节点完成后此节点才可执行"),
+				"depends_on":          arrayStringSchema("前置依赖节点 ID 列表，这些节点完成后此节点才可执行"),
+				"depends_on_keys":     arrayStringSchema("前置依赖节点 key 列表（创建时推荐）"),
 				"estimate":            numberSchema("预计工时"),
 				"status":              stringSchema("节点状态"),
 				"sort_order":          intSchema("排序"),
@@ -709,6 +797,28 @@ func mcpTools() []mcpTool {
 				"activate":            boolSchema("是否创建后立即激活"),
 				"expected_version":    intSchema("预期版本"),
 			}, []string{"task_id", "title"}),
+		},
+		{
+			Name:        "task_tree_batch_create_stages",
+			Description: "批量创建阶段节点（原子事务）。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringSchema("任务 ID"),
+				"stages": arrayOrJSONStringSchema(map[string]any{
+					"type":        "array",
+					"description": "阶段数组",
+					"items": objectSchema(map[string]any{
+						"title":               stringSchema("阶段标题"),
+						"node_key":            stringSchema("阶段 key"),
+						"instruction":         stringSchema("执行说明"),
+						"acceptance_criteria": arrayStringSchema("验收标准"),
+						"estimate":            numberSchema("预计工时"),
+						"sort_order":          intSchema("排序序号"),
+						"metadata":            mapSchema("扩展元数据"),
+						"activate":            boolSchema("是否创建后立即激活"),
+						"expected_version":    intSchema("预期版本"),
+					}, []string{"title"}),
+				}, "阶段数组"),
+			}, []string{"task_id", "stages"}),
 		},
 		{
 			Name:        "task_tree_activate_stage",
@@ -838,7 +948,8 @@ func mcpTools() []mcpTool {
 				"title":               stringSchema("节点标题"),
 				"instruction":         stringSchema("执行说明"),
 				"acceptance_criteria": arrayStringSchema("验收标准"),
-				"depends_on":         arrayStringSchema("前置依赖节点 ID 列表"),
+				"depends_on":          arrayStringSchema("前置依赖节点 ID 列表"),
+				"depends_on_keys":     arrayStringSchema("前置依赖节点 key 列表"),
 				"estimate":            numberSchema("预计工时"),
 				"sort_order":          intSchema("排序序号"),
 				"expected_version":    intSchema("预期版本"),
@@ -889,6 +1000,7 @@ func mcpTools() []mcpTool {
 				"node_id":         stringSchema("节点 ID"),
 				"message":         stringSchema("完成说明"),
 				"memory":          mapSchema("可选：内联写入 Memory（含 summary_text, execution_log, conclusions, decisions, risks, evidence 等），省去单独调用 patch_node_memory"),
+				"result_payload":  mapSchema("结构化执行结果，如 files_created/files_modified/commands_verified/notes"),
 				"idempotency_key": stringSchema("幂等 key"),
 				"actor":           actorSchema(),
 			}, []string{"node_id"}),
@@ -1066,7 +1178,7 @@ func mcpTools() []mcpTool {
 			Description: "批量创建节点（N 个 create_node 合并为 1 次调用）。每个节点支持与 create_node 相同的参数。",
 			InputSchema: objectSchema(map[string]any{
 				"task_id": stringSchema("任务 ID"),
-				"nodes": map[string]any{
+				"nodes": arrayOrJSONStringSchema(map[string]any{
 					"type":        "array",
 					"description": "节点数组，每个元素与 create_node 参数相同",
 					"items": objectSchema(map[string]any{
@@ -1079,13 +1191,73 @@ func mcpTools() []mcpTool {
 						"instruction":         stringSchema("执行说明"),
 						"acceptance_criteria": arrayStringSchema("验收标准"),
 						"depends_on":          arrayStringSchema("前置依赖节点 ID"),
+						"depends_on_keys":     arrayStringSchema("前置依赖节点 key"),
 						"estimate":            numberSchema("预计工时"),
 						"status":              stringSchema("节点状态"),
 						"sort_order":          intSchema("排序"),
 						"metadata":            mapSchema("扩展元数据"),
 					}, []string{"title"}),
-				},
+				}, "节点数组，每个元素与 create_node 参数相同"),
 			}, []string{"task_id", "nodes"}),
+		},
+		{
+			Name:        "task_tree_tree_view",
+			Description: "输出任务树文本视图（缩进树），便于快速核对层级与依赖。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id":         stringSchema("任务 ID"),
+				"stage_node_id":   stringSchema("可选：仅显示某个阶段下的节点"),
+				"only_executable": boolSchema("可选：仅显示可执行叶子与祖先链"),
+			}, []string{"task_id"}),
+		},
+		{
+			Name:        "task_tree_import_plan",
+			Description: "导入 Markdown/YAML 任务计划，支持 dry-run 与 apply。",
+			InputSchema: objectSchema(map[string]any{
+				"format": stringSchema("markdown/yaml/json；默认 markdown"),
+				"data":   stringSchema("导入内容"),
+				"apply":  boolSchema("是否直接落库（默认 false）"),
+			}, []string{"data"}),
+		},
+		{
+			Name:        "task_tree_patch_task_context",
+			Description: "更新任务上下文快照字段（architecture_decisions/reference_files/context_doc_text）。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id":                stringSchema("任务 ID"),
+				"architecture_decisions": arrayStringSchema("架构决策列表"),
+				"reference_files":        arrayStringSchema("执行参考文件列表"),
+				"context_doc_text":       stringSchema("上下文文档文本"),
+				"expected_version":       intSchema("预期版本"),
+			}, []string{"task_id"}),
+		},
+		{
+			Name:        "task_tree_get_task_context",
+			Description: "读取任务上下文快照字段。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringSchema("任务 ID"),
+			}, []string{"task_id"}),
+		},
+		{
+			Name:        "task_tree.batch_create_nodes",
+			Description: "短别名：等价于 task_tree_batch_create_nodes。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringSchema("任务 ID"),
+				"nodes":   map[string]any{"type": "array"},
+			}, []string{"task_id", "nodes"}),
+		},
+		{
+			Name:        "task_tree.activate_stage",
+			Description: "短别名：等价于 task_tree_activate_stage。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id":       stringSchema("任务 ID"),
+				"stage_node_id": stringSchema("阶段节点 ID"),
+			}, []string{"task_id", "stage_node_id"}),
+		},
+		{
+			Name:        "task_tree.list_nodes_summary",
+			Description: "短别名：等价于 task_tree_list_nodes_summary。",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringSchema("任务 ID"),
+			}, []string{"task_id"}),
 		},
 		{
 			Name:        "task_tree_claim_and_start_run",
@@ -1132,18 +1304,18 @@ func mcpTools() []mcpTool {
 			Name:        "task_tree_patch_node_memory",
 			Description: "更新节点 Memory 的结构化字段。支持部分更新：只传需要修改的字段，未传的字段保持不变。用于在节点完成后沉淀关键信息。",
 			InputSchema: objectSchema(map[string]any{
-				"node_id":          stringSchema("节点 ID"),
-				"summary_text":     stringSchema("摘要：做了什么 + 量化结果"),
-				"conclusions":      arrayStringSchema("结论列表：分析发现和判断依据"),
-				"decisions":        arrayStringSchema("决策列表：选择了什么方案、为什么"),
-				"risks":            arrayStringSchema("风险列表：已知风险和隐患"),
-				"blockers":         arrayStringSchema("阻塞项列表"),
-				"next_actions":     arrayStringSchema("下一步行动列表"),
-				"evidence":         arrayStringSchema("证据列表：改动的文件路径、命令输出、验证结果"),
-				"execution_log":          stringSchema("详细执行过程日志（覆盖模式）：传入后会替换整个字段"),
-				"append_execution_log":   stringSchema("追加执行日志（追加模式）：传入的内容会追加到现有 execution_log 末尾，用换行分隔。与 execution_log 互斥，优先使用 execution_log"),
-				"manual_note_text": stringSchema("人工备注"),
-				"expected_version": intSchema("乐观锁版本号"),
+				"node_id":              stringSchema("节点 ID"),
+				"summary_text":         stringSchema("摘要：做了什么 + 量化结果"),
+				"conclusions":          arrayStringSchema("结论列表：分析发现和判断依据"),
+				"decisions":            arrayStringSchema("决策列表：选择了什么方案、为什么"),
+				"risks":                arrayStringSchema("风险列表：已知风险和隐患"),
+				"blockers":             arrayStringSchema("阻塞项列表"),
+				"next_actions":         arrayStringSchema("下一步行动列表"),
+				"evidence":             arrayStringSchema("证据列表：改动的文件路径、命令输出、验证结果"),
+				"execution_log":        stringSchema("详细执行过程日志（覆盖模式）：传入后会替换整个字段"),
+				"append_execution_log": stringSchema("追加执行日志（追加模式）：传入的内容会追加到现有 execution_log 末尾，用换行分隔。与 execution_log 互斥，优先使用 execution_log"),
+				"manual_note_text":     stringSchema("人工备注"),
+				"expected_version":     intSchema("乐观锁版本号"),
 			}, []string{"node_id"}),
 		},
 		{
@@ -1154,6 +1326,13 @@ func mcpTools() []mcpTool {
 			}, []string{"task_id"}),
 		},
 	}
+}
+
+func canonicalToolName(name string) string {
+	if strings.HasPrefix(name, "task_tree.") {
+		return "task_tree_" + strings.ReplaceAll(strings.TrimPrefix(name, "task_tree."), ".", "_")
+	}
+	return name
 }
 
 func objectSchema(properties map[string]any, required []string) map[string]any {
@@ -1167,17 +1346,26 @@ func objectSchema(properties map[string]any, required []string) map[string]any {
 	return out
 }
 
+func oneOfSchema(schemas ...map[string]any) map[string]any {
+	items := make([]any, 0, len(schemas))
+	for _, schema := range schemas {
+		items = append(items, schema)
+	}
+	return map[string]any{"oneOf": items}
+}
+
 func taskCreateSchema() map[string]any {
 	schema := objectSchema(map[string]any{
 		"title":             stringSchema("任务标题"),
 		"goal":              stringSchema("任务目标"),
 		"task_key":          stringSchema("任务短 key"),
+		"dry_run":           boolSchema("仅校验并返回预览，不持久化"),
 		"project_id":        stringSchema("所属项目 ID"),
 		"project_key":       stringSchema("所属项目 key"),
 		"source_tool":       stringSchema("来源工具"),
 		"source_session_id": stringSchema("来源会话"),
 		"tags":              arrayStringSchema("标签"),
-		"stages": map[string]any{
+		"stages": arrayOrJSONStringSchema(map[string]any{
 			"type":        "array",
 			"description": "初始阶段列表；在 nodes 之前创建，第一个阶段自动激活。",
 			"items": objectSchema(map[string]any{
@@ -1190,14 +1378,14 @@ func taskCreateSchema() map[string]any {
 				"metadata":            mapSchema("扩展元数据"),
 				"activate":            boolSchema("是否创建后立即激活"),
 			}, []string{"title"}),
-		},
-		"nodes": map[string]any{
+		}, "初始阶段列表；在 nodes 之前创建，第一个阶段自动激活。"),
+		"nodes": arrayOrJSONStringSchema(map[string]any{
 			"type":        "array",
 			"description": "初始节点树；每个节点可继续带 children 递归细分。如果有 stages，节点将归入当前激活阶段。",
 			"items": map[string]any{
 				"$ref": "#/$defs/task_node_seed",
 			},
-		},
+		}, "初始节点树；每个节点可继续带 children 递归细分。如果有 stages，节点将归入当前激活阶段。"),
 		"metadata":        mapSchema("扩展元数据"),
 		"created_by_type": stringSchema("创建者类型"),
 		"created_by_id":   stringSchema("创建者 ID"),
@@ -1218,6 +1406,8 @@ func taskNodeSeedSchema() map[string]any {
 			"kind":                stringSchema("leaf/group；未填且带 children 时按 group 处理"),
 			"instruction":         stringSchema("执行说明"),
 			"acceptance_criteria": arrayStringSchema("验收标准"),
+			"depends_on":          arrayStringSchema("前置依赖节点 ID 列表"),
+			"depends_on_keys":     arrayStringSchema("前置依赖节点 key 列表"),
 			"estimate":            numberSchema("预计工时"),
 			"status":              stringSchema("节点状态"),
 			"sort_order":          intSchema("排序"),
@@ -1253,7 +1443,17 @@ func mapSchema(desc string) map[string]any {
 	return map[string]any{"type": "object", "description": desc}
 }
 func arrayStringSchema(desc string) map[string]any {
-	return map[string]any{"type": "array", "description": desc, "items": map[string]any{"type": "string"}}
+	return oneOfSchema(
+		map[string]any{"type": "array", "description": desc, "items": map[string]any{"type": "string"}},
+		map[string]any{"type": "string", "description": desc + "（兼容 JSON 字符串数组）"},
+	)
+}
+
+func arrayOrJSONStringSchema(arraySchema map[string]any, desc string) map[string]any {
+	return oneOfSchema(
+		arraySchema,
+		map[string]any{"type": "string", "description": desc + "（兼容 JSON 字符串数组）"},
+	)
 }
 func actorSchema() map[string]any {
 	return objectSchema(map[string]any{
@@ -1316,20 +1516,11 @@ func optStringArg(args map[string]any, key string) *string {
 	return nil
 }
 func optStringSliceArg(args map[string]any, key string) *[]string {
-	if raw, ok := args[key].([]any); ok {
-		out := make([]string, 0, len(raw))
-		for _, item := range raw {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return &out
+	if _, exists := args[key]; !exists {
+		return nil
 	}
-	if raw, ok := args[key].([]string); ok {
-		out := append([]string(nil), raw...)
-		return &out
-	}
-	return nil
+	out := stringSliceArg(args, key)
+	return &out
 }
 func boolArg(args map[string]any, key string) bool {
 	if v, ok := args[key].(bool); ok {
@@ -1363,8 +1554,8 @@ func optFloatArg(args map[string]any, key string) *float64 {
 	return nil
 }
 func stringSliceArg(args map[string]any, key string) []string {
-	raw, ok := args[key].([]any)
-	if !ok {
+	raw, provided, err := anyArrayArg(args, key)
+	if err != nil || !provided {
 		return nil
 	}
 	out := make([]string, 0, len(raw))
@@ -1404,18 +1595,78 @@ func mustActorArg(args map[string]any, key string) actor {
 	return actor{Tool: &tool, AgentID: &agentID}
 }
 
-func taskNodeSeedsArg(args map[string]any, key string) []taskNodeSeed {
+func anyArrayArg(args map[string]any, key string) ([]any, bool, error) {
 	raw, ok := args[key]
 	if !ok || raw == nil {
-		return nil
+		return nil, false, nil
+	}
+	switch v := raw.(type) {
+	case []any:
+		return v, true, nil
+	case []string:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, item)
+		}
+		return out, true, nil
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return []any{}, true, nil
+		}
+		if strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") {
+			unquoted, err := strconv.Unquote(s)
+			if err == nil {
+				s = unquoted
+			}
+		}
+		if !strings.HasPrefix(s, "[") {
+			return []any{s}, true, nil
+		}
+		var out []any
+		if err := json.Unmarshal([]byte(s), &out); err != nil {
+			return nil, true, fmt.Errorf("%s 期望为数组（array），也可传 JSON 字符串数组", key)
+		}
+		return out, true, nil
+	default:
+		return nil, true, fmt.Errorf("%s 期望为数组（array）", key)
+	}
+}
+
+func taskNodeSeedsArg(args map[string]any, key string) ([]taskNodeSeed, error) {
+	raw, provided, err := anyArrayArg(args, key)
+	if err != nil {
+		return nil, err
+	}
+	if !provided {
+		return nil, nil
 	}
 	buf, err := json.Marshal(raw)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []taskNodeSeed
 	if err := json.Unmarshal(buf, &out); err != nil {
-		return nil
+		return nil, fmt.Errorf("%s 解析失败：%w", key, err)
 	}
-	return out
+	return out, nil
+}
+
+func stageCreatesArg(args map[string]any, key string) ([]stageCreate, error) {
+	raw, provided, err := anyArrayArg(args, key)
+	if err != nil {
+		return nil, err
+	}
+	if !provided {
+		return nil, nil
+	}
+	buf, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var out []stageCreate
+	if err := json.Unmarshal(buf, &out); err != nil {
+		return nil, fmt.Errorf("%s 解析失败：%w", key, err)
+	}
+	return out, nil
 }

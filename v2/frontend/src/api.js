@@ -151,9 +151,10 @@ export function pct(v) {
 
 export function shortTime(v) {
   if (!v) return ''
-  let s = (v || '').replace('T', ' ').replace('Z', '')
-  if (s.length >= 16) s = s.substring(0, 16)
-  return s
+  const d = new Date(v)
+  if (isNaN(d.getTime())) return v
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 export function excerpt(v, limit) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"math"
 	"strings"
 	"time"
@@ -422,16 +423,21 @@ func (a *App) createNode(ctx context.Context, taskID string, body nodeCreate) (j
 		parentCarryAcceptance := []string{}
 		parentCarryEstimate := 1.0
 		if role != "stage" && (body.ParentNodeID == nil || *body.ParentNodeID == "") {
-			hasStages, err := a.taskHasStages(txCtx, taskID)
-			if err != nil {
-				return err
-			}
-			if hasStages {
-				activeStageNodeID, err := a.resolveActiveStageNodeID(txCtx, taskID)
+			// 显式 stage_node_id 的优先级高于“当前激活阶段”默认挂载。
+			if body.StageNodeID != nil && strings.TrimSpace(*body.StageNodeID) != "" {
+				parentID = strings.TrimSpace(*body.StageNodeID)
+			} else {
+				hasStages, err := a.taskHasStages(txCtx, taskID)
 				if err != nil {
-					return &appError{Code: 409, Msg: "task is in stage mode but no active stage is available"}
+					return err
 				}
-				parentID = activeStageNodeID
+				if hasStages {
+					activeStageNodeID, err := a.resolveActiveStageNodeID(txCtx, taskID)
+					if err != nil {
+						return &appError{Code: 409, Msg: "task is in stage mode but no active stage is available"}
+					}
+					parentID = activeStageNodeID
+				}
 			}
 		}
 		if body.ParentNodeID != nil && *body.ParentNodeID != "" {
@@ -602,10 +608,11 @@ func (a *App) createNode(ctx context.Context, taskID string, body nodeCreate) (j
 		}
 		nodeID := newID("nd")
 		now := utcNowISO()
-		dependsOnJSON := mustJSON(body.DependsOn)
-		if body.DependsOn == nil {
-			dependsOnJSON = "[]"
+		resolvedDepends, err := a.resolveNodeDependencies(txCtx, taskID, body.DependsOn, body.DependsOnKeys)
+		if err != nil {
+			return err
 		}
+		dependsOnJSON := mustJSON(resolvedDepends)
 		if _, err := a.execContext(txCtx, `INSERT INTO nodes(id, task_id, parent_node_id, node_key, path, depth, kind, role, stage_node_id, title, instruction, acceptance_criteria_json, depends_on_json, status, estimate, sort_order, metadata_json, created_by_type, created_by_id, creation_reason, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			nodeID, taskID, nullable(parentID), nodeKey, path, depth, kind, role, nullable(stageNodeID), body.Title, body.Instruction, mustJSON(defaultCriteria(body.AcceptanceCriteria)), dependsOnJSON, status, estimate, sortOrder, mustJSON(body.Metadata), createdByType, body.CreatedByID, body.CreationReason, now, now); err != nil {
@@ -636,12 +643,18 @@ func (a *App) createNode(ctx context.Context, taskID string, body nodeCreate) (j
 
 func (a *App) batchCreateNodes(ctx context.Context, taskID string, bodies []nodeCreate) ([]jsonMap, error) {
 	results := make([]jsonMap, 0, len(bodies))
-	for _, body := range bodies {
-		node, err := a.createNode(ctx, taskID, body)
-		if err != nil {
-			return results, fmt.Errorf("batch create failed at node %q: %w", body.Title, err)
+	err := a.withTx(ctx, func(txCtx context.Context) error {
+		for idx, body := range bodies {
+			node, err := a.createNode(txCtx, taskID, body)
+			if err != nil {
+				return &appError{Code: 400, Msg: fmt.Sprintf("batch create failed at index %d (title=%q): %v", idx, body.Title, err)}
+			}
+			results = append(results, node)
 		}
-		results = append(results, node)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return results, nil
 }
@@ -884,6 +897,9 @@ func (a *App) completeNode(ctx context.Context, nodeID string, body completeBody
 		if isCanceledResult(node) {
 			return &appError{Code: 409, Msg: "node is canceled, reopen first"}
 		}
+		if err := validateCheckpointCompletion(node, body.ResultPayload); err != nil {
+			return err
+		}
 		run, err := a.ensureSyntheticRun(txCtx, node, "synthetic_complete", body.Message, body.Actor)
 		if err != nil {
 			return err
@@ -912,7 +928,7 @@ func (a *App) completeNode(ctx context.Context, nodeID string, body completeBody
 		if _, err := a.addRunLog(txCtx, runID, runLogCreate{
 			Kind:    "complete",
 			Content: body.Message,
-			Payload: map[string]any{"result": "done"},
+			Payload: map[string]any{"result": "done", "result_payload": body.ResultPayload},
 		}); err != nil {
 			return err
 		}
@@ -922,6 +938,7 @@ func (a *App) completeNode(ctx context.Context, nodeID string, body completeBody
 			Result:        &doneResult,
 			Status:        &finishedStatus,
 			OutputPreview: body.Message,
+			StructuredResult: body.ResultPayload,
 		}); err != nil {
 			return err
 		}
@@ -1102,7 +1119,8 @@ func (a *App) sweepExpiredLeases(ctx context.Context) (int64, error) {
 		}
 		for _, item := range taskItems {
 			if err := a.rollupTask(txCtx, asString(item["task_id"])); err != nil {
-				return err
+				log.Printf("task %s deleted", asString(item["task_id"]))
+				continue
 			}
 		}
 		affected, err = res.RowsAffected()
@@ -1299,6 +1317,45 @@ func defaultCriteria(v []string) []string {
 		return []string{}
 	}
 	return v
+}
+
+func validateCheckpointCompletion(node jsonMap, resultPayload map[string]any) error {
+	if asString(node["role"]) != "checkpoint" {
+		return nil
+	}
+	metadata := asAnyMap(node["metadata"])
+	if metadata == nil {
+		return nil
+	}
+	checkpointSpec := asAnyMap(metadata["checkpoint_spec"])
+	if checkpointSpec == nil {
+		return nil
+	}
+	requiredCommands := uniqueStrings(stringSliceFromAny(checkpointSpec["required_commands"]))
+	if len(requiredCommands) == 0 {
+		return nil
+	}
+	if resultPayload == nil {
+		return &appError{Code: 409, Msg: "checkpoint 节点完成时必须提供 result_payload.commands_verified"}
+	}
+	verifiedCommands := uniqueStrings(stringSliceFromAny(resultPayload["commands_verified"]))
+	if len(verifiedCommands) == 0 {
+		return &appError{Code: 409, Msg: "checkpoint 节点完成时 commands_verified 不能为空"}
+	}
+	verifiedSet := make(map[string]struct{}, len(verifiedCommands))
+	for _, cmd := range verifiedCommands {
+		verifiedSet[cmd] = struct{}{}
+	}
+	missing := make([]string, 0)
+	for _, required := range requiredCommands {
+		if _, ok := verifiedSet[required]; !ok {
+			missing = append(missing, required)
+		}
+	}
+	if len(missing) > 0 {
+		return &appError{Code: 409, Msg: fmt.Sprintf("checkpoint 未通过，缺少 commands_verified: %s", strings.Join(missing, ", "))}
+	}
+	return nil
 }
 
 func stringSliceFromAny(v any) []string {

@@ -7,6 +7,9 @@ import (
 )
 
 func (a *App) createTask(ctx context.Context, body taskCreate) (jsonMap, error) {
+	if body.DryRun != nil && *body.DryRun {
+		return a.previewCreateTask(ctx, body)
+	}
 	var (
 		out jsonMap
 		err error
@@ -70,6 +73,8 @@ func (a *App) createTaskSeedNode(ctx context.Context, taskID string, parentNodeI
 		Title:              seed.Title,
 		Instruction:        seed.Instruction,
 		AcceptanceCriteria: seed.AcceptanceCriteria,
+		DependsOn:          seed.DependsOn,
+		DependsOnKeys:      seed.DependsOnKeys,
 		Estimate:           seed.Estimate,
 		Status:             seed.Status,
 		SortOrder:          seed.SortOrder,
@@ -91,6 +96,151 @@ func (a *App) createTaskSeedNode(ctx context.Context, taskID string, parentNodeI
 		}
 	}
 	return created, nil
+}
+
+func (a *App) previewCreateTask(_ context.Context, body taskCreate) (jsonMap, error) {
+	if strings.TrimSpace(body.Title) == "" {
+		return nil, &appError{Code: 400, Msg: "title required"}
+	}
+	taskKey := ""
+	if body.TaskKey != nil {
+		taskKey = strings.TrimSpace(*body.TaskKey)
+	}
+	if taskKey == "" {
+		taskKey = "DRYRUN"
+	}
+	type previewNode struct {
+		ID          string
+		Path        string
+		Title       string
+		NodeKey     string
+		DependsOn   []string
+		DependsKeys []string
+	}
+	nodes := make([]previewNode, 0, len(body.Nodes)+len(body.Stages))
+	keyToNodes := map[string][]previewNode{}
+	stageKey := ""
+	activeStageID := ""
+	activeStageKey := ""
+	activeStagePath := ""
+	for idx, stage := range body.Stages {
+		nk := strings.TrimSpace(strPtrValue(stage.NodeKey))
+		if nk == "" {
+			nk = fmt.Sprintf("%d", idx+1)
+		}
+		id := fmt.Sprintf("dry_stage_%d", idx+1)
+		path := taskKey + "/" + nk
+		p := previewNode{ID: id, Path: path, Title: stage.Title, NodeKey: nk}
+		nodes = append(nodes, p)
+		keyToNodes[nk] = append(keyToNodes[nk], p)
+		if idx == 0 {
+			activeStageID = id
+			activeStageKey = nk
+			activeStagePath = path
+		}
+		if stage.Activate != nil && *stage.Activate {
+			activeStageID = id
+			activeStageKey = nk
+			activeStagePath = path
+		}
+	}
+	if activeStageID != "" {
+		stageKey = activeStageKey
+	}
+	var walk func(parentPath string, parentID string, siblingCounter map[string]int, seed taskNodeSeed)
+	walk = func(parentPath string, parentID string, siblingCounter map[string]int, seed taskNodeSeed) {
+		nk := strings.TrimSpace(strPtrValue(seed.NodeKey))
+		counterKey := parentPath
+		if counterKey == "" {
+			counterKey = "__root__"
+		}
+		if nk == "" {
+			siblingCounter[counterKey]++
+			nk = fmt.Sprintf("%d", siblingCounter[counterKey])
+		}
+		path := taskKey + "/" + nk
+		if parentPath != "" {
+			path = parentPath + "/" + nk
+		}
+		id := fmt.Sprintf("dry_%d", len(nodes)+1)
+		p := previewNode{
+			ID:          id,
+			Path:        path,
+			Title:       seed.Title,
+			NodeKey:     nk,
+			DependsOn:   uniqueStrings(seed.DependsOn),
+			DependsKeys: uniqueStrings(seed.DependsOnKeys),
+		}
+		_ = parentID
+		nodes = append(nodes, p)
+		keyToNodes[nk] = append(keyToNodes[nk], p)
+		childCounter := map[string]int{}
+		for _, child := range seed.Children {
+			walk(path, id, childCounter, child)
+		}
+	}
+	rootCounter := map[string]int{}
+	for _, seed := range body.Nodes {
+		rootParentPath := ""
+		rootParentID := ""
+		if stageKey != "" {
+			rootParentPath = activeStagePath
+			rootParentID = activeStageID
+		}
+		walk(rootParentPath, rootParentID, rootCounter, seed)
+	}
+
+	resolved := []jsonMap{}
+	errors := []string{}
+	for _, node := range nodes {
+		if len(node.DependsKeys) == 0 {
+			continue
+		}
+		depIDs := append([]string{}, node.DependsOn...)
+		for _, key := range node.DependsKeys {
+			matches := keyToNodes[key]
+			if len(matches) == 0 {
+				errors = append(errors, fmt.Sprintf("节点 %s 的 depends_on_keys=%q 未匹配到节点", node.Path, key))
+				continue
+			}
+			if len(matches) > 1 {
+				paths := make([]string, 0, len(matches))
+				for _, match := range matches {
+					paths = append(paths, match.Path)
+				}
+				errors = append(errors, fmt.Sprintf("节点 %s 的 depends_on_keys=%q 匹配到多个节点：%s", node.Path, key, strings.Join(paths, ", ")))
+				continue
+			}
+			depIDs = append(depIDs, matches[0].ID)
+		}
+		resolved = append(resolved, jsonMap{
+			"path":              node.Path,
+			"title":             node.Title,
+			"depends_on_keys":   node.DependsKeys,
+			"depends_on_ids":    uniqueStrings(depIDs),
+			"depends_on_origin": node.DependsOn,
+		})
+	}
+
+	previewTree := make([]jsonMap, 0, len(nodes))
+	for _, node := range nodes {
+		previewTree = append(previewTree, jsonMap{
+			"id":       node.ID,
+			"path":     node.Path,
+			"title":    node.Title,
+			"node_key": node.NodeKey,
+		})
+	}
+	return jsonMap{
+		"dry_run":               true,
+		"validated":             len(errors) == 0,
+		"task_key":              taskKey,
+		"active_stage_node_id":  activeStageID,
+		"preview_tree":          previewTree,
+		"resolved_dependencies": resolved,
+		"errors":                errors,
+		"warnings":              []string{},
+	}, nil
 }
 
 func (a *App) getTask(ctx context.Context, taskID string, includeDeleted bool) (jsonMap, error) {
@@ -145,6 +295,23 @@ func (a *App) listTasksByProject(ctx context.Context, status, q, projectID strin
 		return nil, err
 	}
 	return scanRows(rows)
+}
+
+func buildTaskSummary(item jsonMap) jsonMap {
+	return jsonMap{
+		"id":              item["id"],
+		"task_key":        item["task_key"],
+		"title":           item["title"],
+		"status":          item["status"],
+		"project_id":      item["project_id"],
+		"summary_percent": item["summary_percent"],
+		"summary_done":    item["summary_done"],
+		"summary_total":   item["summary_total"],
+		"summary_blocked": item["summary_blocked"],
+		"updated_at":      item["updated_at"],
+		"created_at":      item["created_at"],
+		"version":         item["version"],
+	}
 }
 
 func (a *App) softDeleteTask(ctx context.Context, taskID string) (jsonMap, error) {

@@ -2,6 +2,7 @@ package tasktree
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
@@ -53,6 +54,21 @@ func (a *App) listStages(ctx context.Context, taskID string) ([]jsonMap, error) 
 	return scanRows(rows)
 }
 
+func buildStageSummary(item jsonMap) jsonMap {
+	return jsonMap{
+		"id":          item["id"],
+		"title":       item["title"],
+		"status":      item["status"],
+		"progress":    item["progress"],
+		"sort_order":  item["sort_order"],
+		"instruction": item["instruction"],
+		"node_key":    item["node_key"],
+		"kind":        item["kind"],
+		"role":        item["role"],
+		"estimate":    item["estimate"],
+	}
+}
+
 func (a *App) createStage(ctx context.Context, taskID string, body stageCreate) (jsonMap, error) {
 	if strings.TrimSpace(body.Title) == "" {
 		return nil, &appError{Code: 400, Msg: "title required"}
@@ -91,6 +107,24 @@ func (a *App) createStage(ctx context.Context, taskID string, body stageCreate) 
 	return stage, nil
 }
 
+func (a *App) batchCreateStages(ctx context.Context, taskID string, bodies []stageCreate) ([]jsonMap, error) {
+	items := make([]jsonMap, 0, len(bodies))
+	err := a.withTx(ctx, func(txCtx context.Context) error {
+		for idx, body := range bodies {
+			stage, err := a.createStage(txCtx, taskID, body)
+			if err != nil {
+				return &appError{Code: 400, Msg: fmt.Sprintf("batch create stages failed at index %d (title=%q): %v", idx, body.Title, err)}
+			}
+			items = append(items, stage)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func (a *App) activateStage(ctx context.Context, taskID, stageNodeID string, body stageActivate) (jsonMap, error) {
 	var out jsonMap
 	err := a.withTx(ctx, func(txCtx context.Context) error {
@@ -125,7 +159,11 @@ func (a *App) activateStage(ctx context.Context, taskID, stageNodeID string, bod
 			return err
 		}
 		out, err = a.getTask(txCtx, taskID, false)
-		return err
+		if err != nil {
+			return err
+		}
+		out["git_suggestion"] = buildGitSuggestion(out, stage)
+		return nil
 	})
 	return out, err
 }

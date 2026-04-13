@@ -21,8 +21,12 @@ $checks = @(
   @{ Http = '/v1/tasks/{id}'; Method = 'GET'; Tool = 'task_tree_get_task'; RouteHint = 'strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodGet && !strings.Contains(strings.TrimPrefix(path, "/tasks/"), "/")' }
   @{ Http = '/v1/tasks/{id}'; Method = 'PATCH'; Tool = 'task_tree_update_task'; RouteHint = 'strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodPatch && !strings.Contains(strings.TrimPrefix(path, "/tasks/"), "/")' }
   @{ Http = '/v1/tasks/{id}/transition'; Method = 'POST'; Tool = 'task_tree_transition_task'; RouteHint = 'strings.HasSuffix(path, "/transition") && strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodPost' }
+  @{ Http = '/v1/tasks/{id}/next-node'; Method = 'GET'; Tool = 'task_tree_next_node'; RouteHint = 'strings.HasSuffix(path, "/next-node") && r.Method == http.MethodGet' }
+  @{ Http = '/v1/tasks/{id}/context'; Method = 'GET'; Tool = 'task_tree_get_task_context'; RouteHint = 'strings.HasPrefix(path, "/tasks/") && strings.HasSuffix(path, "/context") && r.Method == http.MethodGet' }
+  @{ Http = '/v1/tasks/{id}/context'; Method = 'PATCH'; Tool = 'task_tree_patch_task_context'; RouteHint = 'strings.HasPrefix(path, "/tasks/") && strings.HasSuffix(path, "/context") && r.Method == http.MethodPatch' }
   @{ Http = '/v1/tasks/{id}/nodes'; Method = 'GET'; Tool = 'task_tree_list_nodes'; RouteHint = 'strings.HasSuffix(path, "/nodes") && r.Method == http.MethodGet' }
   @{ Http = '/v1/tasks/{id}/nodes'; Method = 'POST'; Tool = 'task_tree_create_node'; RouteHint = 'strings.HasSuffix(path, "/nodes") && r.Method == http.MethodPost' }
+  @{ Http = '/v1/tasks/{id}/nodes/batch'; Method = 'POST'; Tool = 'task_tree_batch_create_nodes'; RouteHint = 'strings.HasSuffix(path, "/nodes/batch") && r.Method == http.MethodPost' }
   @{ Http = '/v1/nodes/{id}'; Method = 'GET'; Tool = 'task_tree_get_node'; RouteHint = 'strings.HasPrefix(path, "/nodes/") && r.Method == http.MethodGet' }
   @{ Http = '/v1/nodes/{id}'; Method = 'PATCH'; Tool = 'task_tree_update_node'; RouteHint = 'strings.HasPrefix(path, "/nodes/") && r.Method == http.MethodPatch' }
   @{ Http = '/v1/nodes/{id}/progress'; Method = 'POST'; Tool = 'task_tree_progress'; RouteHint = 'strings.HasSuffix(path, "/progress") && r.Method == http.MethodPost' }
@@ -32,7 +36,8 @@ $checks = @(
   @{ Http = '/v1/nodes/{id}/release'; Method = 'POST'; Tool = 'task_tree_release'; RouteHint = 'strings.HasSuffix(path, "/release") && r.Method == http.MethodPost' }
   @{ Http = '/v1/nodes/{id}/retype'; Method = 'POST'; Tool = 'task_tree_retype_node'; RouteHint = 'strings.HasSuffix(path, "/retype") && strings.Contains(path, "/nodes/") && r.Method == http.MethodPost' }
   @{ Http = '/v1/tasks/{id}/remaining'; Method = 'GET'; Tool = 'task_tree_get_remaining'; RouteHint = 'strings.HasSuffix(path, "/remaining") && r.Method == http.MethodGet' }
-  @{ Http = '/v1/tasks/{id}/resume-context'; Method = 'GET'; Tool = 'task_tree_get_resume_context'; RouteHint = 'strings.HasSuffix(path, "/resume-context") && r.Method == http.MethodGet' }
+  @{ Http = '/v1/tasks/{id}/nodes/{node_id}/resume-context'; Method = 'GET'; Tool = 'task_tree_get_resume_context'; RouteHint = 'strings.HasSuffix(path, "/resume-context") && r.Method == http.MethodGet' }
+  @{ Http = '/v1/tasks/{id}/tree-view'; Method = 'GET'; Tool = 'task_tree_tree_view'; RouteHint = 'strings.HasSuffix(path, "/tree-view") && strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodGet' }
   @{ Http = '/v1/tasks/{id}/resume'; Method = 'GET'; Tool = 'task_tree_resume'; RouteHint = 'strings.HasSuffix(path, "/resume") && r.Method == http.MethodGet' }
   @{ Http = '/v1/events'; Method = 'GET'; Tool = 'task_tree_list_events'; RouteHint = 'path == "/events" && r.Method == http.MethodGet' }
   @{ Http = '/v1/tasks/{id}/artifacts'; Method = 'GET'; Tool = 'task_tree_list_artifacts'; RouteHint = 'strings.HasSuffix(path, "/artifacts") && r.Method == http.MethodGet' }
@@ -44,6 +49,7 @@ $checks = @(
   @{ Http = '/v1/admin/empty-trash'; Method = 'POST'; Tool = 'task_tree_empty_trash'; RouteHint = 'path == "/admin/empty-trash" && r.Method == http.MethodPost' }
   @{ Http = '/v1/admin/sweep-leases'; Method = 'POST'; Tool = 'task_tree_sweep_leases'; RouteHint = 'path == "/admin/sweep-leases" && r.Method == http.MethodPost' }
   @{ Http = '/v1/search'; Method = 'GET'; Tool = 'task_tree_search'; RouteHint = 'path == "/search" && r.Method == http.MethodGet' }
+  @{ Http = '/v1/import-plan'; Method = 'POST'; Tool = 'task_tree_import_plan'; RouteHint = 'path == "/import-plan" && r.Method == http.MethodPost' }
   @{ Http = '/v1/work-items'; Method = 'GET'; Tool = 'task_tree_work_items'; RouteHint = 'path == "/work-items" && r.Method == http.MethodGet' }
   @{ Http = '/v1/projects'; Method = 'GET'; Tool = 'task_tree_list_projects'; RouteHint = 'path == "/projects" && r.Method == http.MethodGet' }
   @{ Http = '/v1/projects'; Method = 'POST'; Tool = 'task_tree_create_project'; RouteHint = 'path == "/projects" && r.Method == http.MethodPost' }
@@ -52,6 +58,7 @@ $checks = @(
   @{ Http = '/v1/projects/{id}'; Method = 'DELETE'; Tool = 'task_tree_delete_project'; RouteHint = 'strings.HasPrefix(path, "/projects/") && r.Method == http.MethodDelete && !strings.Contains(strings.TrimPrefix(path, "/projects/"), "/")' }
   @{ Http = '/v1/projects/{id}/overview'; Method = 'GET'; Tool = 'task_tree_project_overview'; RouteHint = 'strings.HasPrefix(path, "/projects/") && strings.HasSuffix(path, "/overview") && r.Method == http.MethodGet' }
   @{ Http = '/v1/projects/{id}/tasks'; Method = 'GET'; Tool = 'task_tree_list_tasks'; RouteHint = 'strings.HasPrefix(path, "/projects/") && strings.HasSuffix(path, "/tasks") && r.Method == http.MethodGet' }
+  @{ Http = '/v1/tasks/{id}/stages/batch'; Method = 'POST'; Tool = 'task_tree_batch_create_stages'; RouteHint = 'strings.HasSuffix(path, "/stages/batch") && r.Method == http.MethodPost' }
 )
 
 $missing = @()

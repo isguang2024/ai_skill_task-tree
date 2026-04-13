@@ -75,6 +75,25 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
+	case strings.HasPrefix(path, "/tasks/") && strings.HasSuffix(path, "/context") && r.Method == http.MethodGet:
+		item, err := a.getTaskMemory(r.Context(), taskIDFromPath(path))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+	case strings.HasPrefix(path, "/tasks/") && strings.HasSuffix(path, "/context") && r.Method == http.MethodPatch:
+		var body taskContextPatchBody
+		if err := decodeJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		item, err := a.patchTaskContext(r.Context(), taskIDFromPath(path), body)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
 	case strings.HasPrefix(path, "/tasks/") && strings.HasSuffix(path, "/memory") && r.Method == http.MethodPatch:
 		var body memoryPatchBody
 		if err := decodeJSON(r, &body); err != nil {
@@ -199,6 +218,18 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
+	case strings.HasSuffix(path, "/stages/batch") && r.Method == http.MethodPost:
+		var body stageBatchCreate
+		if err := decodeJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		items, err := a.batchCreateStages(r.Context(), taskIDFromPath(path), body.Stages)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, jsonMap{"created": items, "count": len(items)})
 	case strings.HasSuffix(path, "/stages") && r.Method == http.MethodGet:
 		items, err := a.listStages(r.Context(), taskIDFromPath(path))
 		if err != nil {
@@ -366,7 +397,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, items)
+			writeJSON(w, http.StatusOK, jsonMap{"items": items, "has_more": false})
 			return
 		}
 		items, err := a.listNodesWithOptions(r.Context(), taskIDFromPath(path), parseNodeListOptions(r))
@@ -546,6 +577,30 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 			parseNodeListOptions(r),
 			parseEventListOptions(r),
 		)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+	case strings.HasSuffix(path, "/tree-view") && strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodGet:
+		stageNodeID := strings.TrimSpace(r.URL.Query().Get("stage_node_id"))
+		var stageRef *string
+		if stageNodeID != "" {
+			stageRef = &stageNodeID
+		}
+		item, err := a.treeView(r.Context(), taskIDFromPath(path), stageRef, r.URL.Query().Get("only_executable") == "true")
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+	case path == "/import-plan" && r.Method == http.MethodPost:
+		var body importPlanBody
+		if err := decodeJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
+		item, err := a.importPlan(r.Context(), body)
 		if err != nil {
 			writeErr(w, err)
 			return

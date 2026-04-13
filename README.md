@@ -71,6 +71,7 @@ npm run dev
 ## 协作约束
 
 - 修改技能或新增 API/MCP 时，必须同步更新全局技能文件
+- 除 `SKILL.md` 外，`v2/skill/docs/` 下文档（`task-tree-api.md`、`task-tree-best-practices.md`、`task-tree-tools.md`）也必须同步到全局技能目录
 - 每个版本的 AGENTS.md 中有详细的协作原则
 - 两个版本共享同一个远程仓库
 

@@ -740,9 +740,11 @@ func (a *App) handleAIClearSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SessionID string `json:"session_id"`
 	}
-	if err := decodeJSON(r, &body); err != nil {
-		writeErr(w, err)
-		return
+	if r.ContentLength > 0 {
+		if err := decodeJSON(r, &body); err != nil {
+			writeErr(w, err)
+			return
+		}
 	}
 	a.aiSessions.clear(body.SessionID)
 	writeJSON(w, http.StatusOK, jsonMap{"ok": true})

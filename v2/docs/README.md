@@ -43,6 +43,13 @@
 
 当你修改关键路径、端口、接口、DXT、技能、导航或使用方式时，要顺手同步更新说明文件，确保文档和最新状态一致。
 
+另外，凡是改动 `skill/` 下文档，不仅要更新仓库内文件，还要同步到全局技能目录：
+
+- `C:\Users\Administrator\.claude\skills\task-tree\`
+- `C:\Users\Administrator\.codex\skills\task-tree\`
+
+其中除 `SKILL.md` 外，`skill/docs/task-tree-api.md`、`skill/docs/task-tree-best-practices.md`、`skill/docs/task-tree-tools.md` 也必须同步。
+
 ## 当前对外能力
 
 ### 已有 HTTP + MCP

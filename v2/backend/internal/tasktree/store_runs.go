@@ -304,6 +304,11 @@ func (a *App) listNodeRuns(ctx context.Context, nodeID string, limit int) ([]jso
 	}
 	for _, item := range items {
 		item["run_id"] = asString(item["id"])
+		if structured := asAnyMap(item["structured_result"]); structured != nil {
+			item["latest_result_payload"] = structured
+		} else {
+			item["latest_result_payload"] = map[string]any{}
+		}
 	}
 	return items, nil
 }
@@ -325,6 +330,11 @@ func (a *App) listTaskRuns(ctx context.Context, taskID string, limit int) ([]jso
 	}
 	for _, item := range items {
 		item["run_id"] = asString(item["id"])
+		if structured := asAnyMap(item["structured_result"]); structured != nil {
+			item["latest_result_payload"] = structured
+		} else {
+			item["latest_result_payload"] = map[string]any{}
+		}
 	}
 	return items, nil
 }

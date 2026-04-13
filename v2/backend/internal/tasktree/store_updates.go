@@ -133,9 +133,21 @@ func (a *App) updateNode(ctx context.Context, nodeID string, body nodeUpdate) (j
 			args = append(args, *body.SortOrder)
 			fields = append(fields, "sort_order")
 		}
-		if body.DependsOn != nil {
+		if body.DependsOn != nil || body.DependsOnKeys != nil {
+			dependsOnIDs := []string{}
+			if body.DependsOn != nil {
+				dependsOnIDs = *body.DependsOn
+			}
+			dependsOnKeys := []string{}
+			if body.DependsOnKeys != nil {
+				dependsOnKeys = *body.DependsOnKeys
+			}
+			resolvedDepends, err := a.resolveNodeDependencies(txCtx, asString(node["task_id"]), dependsOnIDs, dependsOnKeys)
+			if err != nil {
+				return err
+			}
 			updates = append(updates, "depends_on_json = ?")
-			args = append(args, mustJSON(*body.DependsOn))
+			args = append(args, mustJSON(resolvedDepends))
 			fields = append(fields, "depends_on")
 		}
 		if len(updates) == 0 {

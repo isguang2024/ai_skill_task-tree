@@ -363,6 +363,31 @@ func decodeJSON(r *http.Request, target any) error {
 	return nil
 }
 
+func omitEmpty(m jsonMap) jsonMap {
+	for k, v := range m {
+		switch v.(type) {
+		case nil:
+			delete(m, k)
+		case map[string]any:
+			if len(v.(map[string]any)) == 0 {
+				delete(m, k)
+			}
+		case jsonMap:
+			if len(v.(jsonMap)) == 0 {
+				delete(m, k)
+			}
+		}
+	}
+	return m
+}
+
+func omitEmptySlice(items []jsonMap) []jsonMap {
+	for i := range items {
+		omitEmpty(items[i])
+	}
+	return items
+}
+
 func placeholders(n int) string {
 	if n <= 0 {
 		return "?"
