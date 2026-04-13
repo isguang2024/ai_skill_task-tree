@@ -142,6 +142,21 @@ V2 当前 MCP 主要覆盖五大类。
 - `task_tree.activate_stage`
 - `task_tree.list_nodes_summary`
 
+### 3.1 MCP 返回优化（与 HTTP 的差异）
+
+MCP 工具层对返回数据做了裁剪，减少 AI token 消耗：
+
+| 差异点 | 说明 |
+|--------|------|
+| **list_nodes 默认 summary** | MCP 默认 `view_mode=summary`（13 字段），HTTP 无参数返回全量 |
+| **list_tasks 裁剪** | MCP 去掉 wrapup_summary/goal/metadata 等，保留 12 字段 |
+| **list_stages 裁剪** | MCP 返回 10 字段 + `{items:[...]}` 格式 |
+| **list_events 默认 limit=20** | MCP 默认 20 条，HTTP 默认 100 条 |
+| **work_items 裁剪** | MCP 返回 10 字段 + `{items:[...]}` 格式 |
+| **resume 裁剪** | task 只保留核心字段，task_memory 只保留 summary/decisions/risks/next_actions |
+| **omitEmpty** | MCP 输出自动移除 null 值和空 map 字段 |
+| **数组参数兼容** | kind/status/type 等过滤参数支持字符串 `"leaf"` 和数组 `["leaf"]` 两种写法 |
+
 ## 4. 当前哪些能力不是 MCP 工具
 
 下面这些能力在 V2 已经存在，但当前仅通过 HTTP 提供，**没有**对应 MCP 工具：
