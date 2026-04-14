@@ -432,12 +432,49 @@ func (a *App) transitionNode(ctx context.Context, nodeID string, body transition
 		if err := ensureExpectedVersion(node, body.ExpectedVersion, "node"); err != nil {
 			return err
 		}
-		if asString(node["kind"]) != "leaf" {
-			return &appError{Code: 400, Msg: "only leaf node supports transition"}
-		}
 		action := strings.TrimSpace(body.Action)
 		if action == "" {
 			return &appError{Code: 400, Msg: "action required"}
+		}
+
+		// Cascade: if action=cancel on a group node, cancel all leaf descendants
+		if action == "cancel" && asString(node["kind"]) == "group" {
+			path := asString(node["path"])
+			now := utcNowISO()
+			taskID := asString(node["task_id"])
+			// Cancel all non-closed leaf descendants
+			res, err := a.execContext(txCtx,
+				`UPDATE nodes SET status = 'canceled', result = 'canceled', claimed_by_type = NULL, claimed_by_id = NULL, lease_until = NULL, updated_at = ?, version = version + 1
+				 WHERE task_id = ? AND path LIKE ? AND kind = 'leaf' AND status NOT IN ('done','canceled','closed') AND deleted_at IS NULL`,
+				now, taskID, path+"/%")
+			if err != nil {
+				return err
+			}
+			affected, _ := res.RowsAffected()
+			// Also mark the group itself as canceled
+			if _, err := a.execContext(txCtx, `UPDATE nodes SET status = 'canceled', result = 'canceled', updated_at = ?, version = version + 1 WHERE id = ?`, now, nodeID); err != nil {
+				return err
+			}
+			msg := fmt.Sprintf("批量取消 group 及 %d 个子节点", affected)
+			if err := a.insertEvent(txCtx, taskID, &nodeID, "canceled", &msg, map[string]any{
+				"action": "cancel", "cascade": true, "affected_leaves": affected,
+			}, body.Actor, nil); err != nil {
+				return err
+			}
+			if err := a.rollupTask(txCtx, taskID); err != nil {
+				return err
+			}
+			result, err = a.findNode(txCtx, nodeID, false)
+			if err != nil {
+				return err
+			}
+			result["cascade_affected"] = affected
+			return nil
+		}
+
+		// Non-cascade actions require leaf node
+		if asString(node["kind"]) != "leaf" {
+			return &appError{Code: 400, Msg: fmt.Sprintf("only leaf node supports %s (use cancel on group for cascade)", action)}
 		}
 		currentStatus := asString(node["status"])
 		newStatus := currentStatus
@@ -565,6 +602,56 @@ func defaultTransitionMessage(msg *string, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(*msg)
+}
+
+// deleteNode soft-deletes a node and all its descendants.
+// Only allowed on nodes that are not currently running (no active lease).
+func (a *App) deleteNode(ctx context.Context, nodeID string) (jsonMap, error) {
+	var result jsonMap
+	err := a.withTx(ctx, func(txCtx context.Context) error {
+		node, err := a.findNode(txCtx, nodeID, false)
+		if err != nil {
+			return err
+		}
+		// Cannot delete a running/claimed node
+		if leaseActive(node) {
+			return &appError{Code: 409, Msg: "node is currently claimed, release it first"}
+		}
+		status := asString(node["status"])
+		if status == "running" {
+			return &appError{Code: 409, Msg: "node is running, complete or release it first"}
+		}
+		now := utcNowISO()
+		taskID := asString(node["task_id"])
+		// Soft-delete the node and all descendants
+		if _, err := a.execContext(txCtx, `UPDATE nodes SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`, now, now, nodeID); err != nil {
+			return err
+		}
+		// Also soft-delete all descendants (nodes whose path starts with this node's path)
+		path := asString(node["path"])
+		if path != "" {
+			if _, err := a.execContext(txCtx, `UPDATE nodes SET deleted_at = ?, updated_at = ? WHERE task_id = ? AND path LIKE ? AND deleted_at IS NULL`, now, now, taskID, path+"/%"); err != nil {
+				return err
+			}
+		}
+		// Insert event
+		msg := "节点已删除"
+		if err := a.insertEvent(txCtx, taskID, &nodeID, "node_deleted", &msg, map[string]any{
+			"node_title": asString(node["title"]),
+			"kind":       asString(node["kind"]),
+		}, nil, nil); err != nil {
+			return err
+		}
+		if err := a.rollupTask(txCtx, taskID); err != nil {
+			return err
+		}
+		result = jsonMap{"deleted": true, "node_id": nodeID, "title": asString(node["title"])}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func defaultNodeTransitionMessage(action string) string {

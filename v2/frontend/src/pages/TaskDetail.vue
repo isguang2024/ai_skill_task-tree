@@ -157,441 +157,111 @@
           <n-tabs v-model:value="activeTab" type="line" animated>
             <!-- Node Detail Tab -->
             <n-tab-pane name="node" tab="当前节点">
-              <template v-if="selectedNode">
-                <n-card size="small" style="margin-bottom:12px;">
-                  <template #header>
-                    <n-space align="center" :size="6">
-                      <n-tooltip>
-                        <template #trigger>
-                          <n-tag :type="statusType(selectedNode.status)" :bordered="false">{{ stateLabel(selectedNode.status, selectedNode.result) }}</n-tag>
-                        </template>
-                        <span>节点当前状态；决定是否可领取、完成或流转</span>
-                      </n-tooltip>
-                      <n-tag size="small">{{ selectedNode.kind==='group'?'分组':'叶子' }}</n-tag>
-                      <n-tag type="info" size="small">{{ nodePct(selectedNode) }}%</n-tag>
-                      <n-tag v-if="isNodeClaimed" type="success" size="small">已领取 {{ claimedBy }}</n-tag>
-                    </n-space>
-                  </template>
-                  <template #header-extra>
-                    <n-space :size="4">
-                      <n-tooltip>
-                        <template #trigger>
-                          <n-button size="tiny" quaternary @click="toggleFav(selectedNode)">{{ isFav ? '★' : '☆' }}</n-button>
-                        </template>
-                        <span>收藏或取消收藏当前节点</span>
-                      </n-tooltip>
-                      <n-tooltip>
-                        <template #trigger>
-                          <n-button size="tiny" quaternary @click="copyId(selectedNode.id)">复制 ID</n-button>
-                        </template>
-                        <span>复制节点 ID 便于外部引用</span>
-                      </n-tooltip>
-                    </n-space>
-                  </template>
-
-                  <div style="font-size:16px;font-weight:600;margin-bottom:2px;">{{ selectedNode.title }}</div>
-                  <n-text depth="3" style="font-size:12px;">{{ selectedNode.path }}</n-text>
-                  <n-progress :percentage="nodePct(selectedNode)" :height="6" :border-radius="3" style="margin:10px 0;" />
-
-                  <!-- Node Actions -->
-                  <n-space :size="6" style="margin-bottom:12px;">
-                    <n-tooltip v-if="canClaim"><template #trigger><n-button size="small" type="primary" @click="confirmClaimNode">领取</n-button></template><span>领取当前节点的执行权</span></n-tooltip>
-                    <n-tooltip v-if="canRelease"><template #trigger><n-button size="small" @click="confirmReleaseNode">释放</n-button></template><span>归还当前节点的执行权</span></n-tooltip>
-                    <n-tooltip v-if="canProgress"><template #trigger><n-button size="small" type="info" @click="confirmOpenProgressModal">上报进度</n-button></template><span>记录当前节点进展</span></n-tooltip>
-                    <n-tooltip v-if="canComplete"><template #trigger><n-button size="small" type="success" @click="confirmOpenCompleteModal">完成</n-button></template><span>将当前节点标记完成</span></n-tooltip>
-                    <n-tooltip v-if="canBlock"><template #trigger><n-button size="small" type="error" ghost @click="confirmBlockNode">阻塞</n-button></template><span>将节点标记为阻塞</span></n-tooltip>
-                    <n-tooltip v-if="canUnblock"><template #trigger><n-button size="small" @click="confirmNodeTransition('unblock')">解除阻塞</n-button></template><span>恢复节点为可执行状态</span></n-tooltip>
-                    <n-tooltip v-if="canPause"><template #trigger><n-button size="small" type="warning" ghost @click="confirmNodeTransition('pause')">暂停</n-button></template><span>暂停当前节点</span></n-tooltip>
-                    <n-tooltip v-if="canReopen"><template #trigger><n-button size="small" @click="confirmNodeTransition('reopen')">重开</n-button></template><span>把已关闭节点重新打开</span></n-tooltip>
-                    <n-tooltip v-if="canCancel"><template #trigger><n-button size="small" type="error" ghost @click="confirmNodeTransition('cancel')">取消</n-button></template><span>取消当前节点</span></n-tooltip>
-                    <n-tooltip v-if="canConvertToLeaf"><template #trigger><n-button size="small" @click="confirmRetypeNode">转回执行节点</n-button></template><span>把无子节点的分组改回执行节点</span></n-tooltip>
-                    <n-tooltip><template #trigger><n-button size="small" quaternary @click="confirmOpenNodeCreate(selectedNode.id)">添加子节点</n-button></template><span>在当前节点下新增子节点</span></n-tooltip>
-                    <n-tooltip v-if="selectedNode.parent_node_id"><template #trigger><n-button size="small" quaternary @click="confirmOpenNodeCreate(selectedNode.parent_node_id)">添加同级</n-button></template><span>在同级位置新增兄弟节点</span></n-tooltip>
-                    <n-tooltip v-if="!activeRun"><template #trigger><n-button size="small" type="info" ghost @click="confirmOpenRunStart">开始 Run</n-button></template><span>为该节点创建一次运行记录</span></n-tooltip>
-                    <n-tooltip v-if="activeRun"><template #trigger><n-button size="small" type="success" ghost @click="confirmOpenRunFinish">结束 Run</n-button></template><span>结束当前运行记录</span></n-tooltip>
-                    <n-tooltip v-if="activeRun"><template #trigger><n-button size="small" quaternary @click="confirmOpenRunLog">追加日志</n-button></template><span>向当前 Run 追加日志</span></n-tooltip>
-                  </n-space>
-
-                  <!-- Instruction -->
-                  <div v-if="selectedNode.instruction" style="margin-bottom:12px;">
-                    <n-text depth="3" style="font-size:11px;font-weight:600;">INSTRUCTION</n-text>
-                    <div style="font-size:13px;white-space:pre-wrap;margin-top:4px;padding:8px;background:var(--n-color-modal);border-radius:4px;">{{ selectedNode.instruction }}</div>
-                  </div>
-
-                  <!-- Acceptance + Node Info (collapsible) -->
-                  <n-collapse style="margin-bottom:0;">
-                    <n-collapse-item v-if="selectedNode.acceptance_criteria?.length" title="验收标准" name="acceptance">
-                      <n-list size="small" bordered>
-                        <n-list-item v-for="(c,i) in selectedNode.acceptance_criteria" :key="i">
-                          <n-text>{{ c }}</n-text>
-                        </n-list-item>
-                      </n-list>
-                    </n-collapse-item>
-                    <n-collapse-item v-if="parsedDependsOn.length" title="前置依赖" name="depends">
-                      <n-list size="small" bordered>
-                        <n-list-item v-for="depId in parsedDependsOn" :key="depId">
-                          <n-space align="center" :size="8">
-                            <n-tag :type="depNodeStatus(depId)==='done'?'success':depNodeStatus(depId)==='canceled'?'default':'warning'" size="small">{{ depNodeStatus(depId) }}</n-tag>
-                            <n-text style="font-size:12px;cursor:pointer;" @click="selectNode(depId)">{{ depNodeTitle(depId) || depId }}</n-text>
-                          </n-space>
-                        </n-list-item>
-                      </n-list>
-                    </n-collapse-item>
-                    <n-collapse-item title="节点信息" name="info">
-                      <n-descriptions :column="2" label-placement="top" bordered size="small">
-                        <n-descriptions-item label="节点 ID">
-                          <n-text code style="font-size:11px;cursor:pointer;" @click="copyId(selectedNode.id)">{{ selectedNode.id }}</n-text>
-                        </n-descriptions-item>
-                        <n-descriptions-item label="任务 ID">
-                          <n-text code style="font-size:11px;cursor:pointer;" @click="copyId(props.id)">{{ props.id }}</n-text>
-                        </n-descriptions-item>
-                        <n-descriptions-item label="估时">{{ selectedNode.estimate || 0 }}h</n-descriptions-item>
-                        <n-descriptions-item label="类型">{{ selectedNode.kind==='group'?'分组节点':'叶子节点' }}</n-descriptions-item>
-                        <n-descriptions-item label="路径">{{ selectedNode.path }}</n-descriptions-item>
-                        <n-descriptions-item label="租约" v-if="selectedNode.lease_until">{{ shortTime(selectedNode.lease_until) }}</n-descriptions-item>
-                      </n-descriptions>
-                    </n-collapse-item>
-                  </n-collapse>
-
-                  <n-grid :cols="2" :x-gap="8" style="margin-top:12px;">
-                    <n-gi>
-                      <n-card size="small" title="节点摘要">
-                        <div style="font-size:12px;line-height:1.7;white-space:pre-wrap;">{{ selectedMemoryText || '暂无节点摘要' }}</div>
-                        <n-collapse v-if="selectedNodeMemory?.execution_log" style="margin-top:8px;">
-                          <n-collapse-item title="执行过程" name="exec_log">
-                            <div style="font-size:11px;line-height:1.6;white-space:pre-wrap;max-height:300px;overflow-y:auto;padding:6px;background:var(--n-color-modal);border-radius:4px;">{{ selectedNodeMemory.execution_log }}</div>
-                          </n-collapse-item>
-                        </n-collapse>
-                      </n-card>
-                    </n-gi>
-                    <n-gi>
-                      <n-card size="small" title="节点运行历史">
-                        <n-empty v-if="nodeRuns.length===0" description="暂无运行记录" size="small" />
-                        <n-list v-else size="small" hoverable clickable>
-                          <n-list-item
-                            v-for="run in nodeRuns"
-                            :key="run.id || run.run_id"
-                            @click="selectRun(run.id || run.run_id)"
-                            :style="selectedRunId === (run.id || run.run_id) ? 'background:var(--n-color-hover);border-radius:6px;' : ''"
-                          >
-                            <n-space vertical :size="4" style="width:100%;">
-                              <n-space justify="space-between" style="width:100%;" align="center">
-                                <n-space :size="4" align="center">
-                                  <n-tooltip>
-                                    <template #trigger>
-                                      <n-tag :type="run.status==='running' ? 'info' : 'default'" size="small" :bordered="false">
-                                        {{ run.result || run.status || 'run' }}
-                                      </n-tag>
-                                    </template>
-                                    <span>Run 状态；running 表示执行中，其他值表示已结束</span>
-                                  </n-tooltip>
-                                  <n-text strong style="font-size:12px;">{{ run.trigger_kind || 'manual' }}</n-text>
-                                </n-space>
-                                <n-text depth="3" style="font-size:11px;">{{ shortTime(run.started_at || run.created_at) }}</n-text>
-                              </n-space>
-                              <n-space :size="8" wrap style="font-size:11px;">
-                                <n-text depth="3">开始 {{ shortTime(run.started_at || run.created_at) }}</n-text>
-                                <n-text depth="3">结束 {{ shortTime(run.finished_at || run.updated_at) || '进行中' }}</n-text>
-                                <n-text depth="3">执行者 {{ formatRunActor(run) }}</n-text>
-                              </n-space>
-                            </n-space>
-                          </n-list-item>
-                        </n-list>
-                      </n-card>
-                    </n-gi>
-                  </n-grid>
-                  <n-card v-if="selectedRun" size="small" title="Run 详情" style="margin-top:12px;">
-                    <template #header-extra>
-                      <n-space :size="4" align="center">
-                        <n-tooltip>
-                          <template #trigger>
-                            <n-tag size="small">{{ selectedRun.id || selectedRun.run_id }}</n-tag>
-                          </template>
-                          <span>Run 的唯一 ID</span>
-                        </n-tooltip>
-                        <n-tooltip>
-                          <template #trigger>
-                            <n-tag :type="selectedRun.status==='running' ? 'info' : 'default'" size="small" :bordered="false">
-                              {{ selectedRun.result || selectedRun.status || 'run' }}
-                            </n-tag>
-                          </template>
-                          <span>Run 的状态或结果</span>
-                        </n-tooltip>
-                      </n-space>
-                    </template>
-                    <n-spin :show="runDetailLoading">
-                      <n-grid :cols="2" :x-gap="8" style="margin-bottom:12px;">
-                        <n-gi>
-                          <n-card size="small" title="输入摘要">
-                            <div style="font-size:12px;line-height:1.7;white-space:pre-wrap;">{{ selectedRun.input_summary || '无' }}</div>
-                          </n-card>
-                        </n-gi>
-                        <n-gi>
-                          <n-card size="small" title="输出摘要">
-                            <div style="font-size:12px;line-height:1.7;white-space:pre-wrap;">{{ selectedRun.output_preview || selectedRun.error_text || '无' }}</div>
-                          </n-card>
-                        </n-gi>
-                      </n-grid>
-                      <n-space :size="8" wrap style="margin-bottom:12px;">
-                        <n-tooltip><template #trigger><n-tag size="small">触发 {{ selectedRun.trigger_kind || 'manual' }}</n-tag></template><span>Run 的触发来源</span></n-tooltip>
-                        <n-tooltip><template #trigger><n-tag size="small">开始 {{ shortTime(selectedRun.started_at || selectedRun.created_at) }}</n-tag></template><span>Run 开始执行的时间</span></n-tooltip>
-                        <n-tooltip><template #trigger><n-tag size="small">结束 {{ shortTime(selectedRun.finished_at || selectedRun.updated_at) || '进行中' }}</n-tag></template><span>Run 结束时间；未结束时显示进行中</span></n-tooltip>
-                        <n-tooltip><template #trigger><n-tag size="small">执行者 {{ formatRunActor(selectedRun) }}</n-tag></template><span>执行该 Run 的 actor 信息</span></n-tooltip>
-                      </n-space>
-                      <n-card size="small" title="日志流">
-                        <n-empty v-if="selectedRunLogs.length===0" description="暂无日志" size="small" />
-                        <n-scrollbar v-else style="max-height:260px;">
-                          <n-list size="small">
-                            <n-list-item v-for="log in selectedRunLogs" :key="log.id || log.log_id">
-                              <n-space vertical :size="4" style="width:100%;">
-                                <n-space justify="space-between" style="width:100%;" align="center">
-                                  <n-space :size="4" align="center">
-                                    <n-tag size="small" type="info" :bordered="false">#{{ log.seq }}</n-tag>
-                                    <n-tag size="small">{{ log.kind || 'log' }}</n-tag>
-                                  </n-space>
-                                  <n-text depth="3" style="font-size:11px;">{{ shortTime(log.created_at) }}</n-text>
-                                </n-space>
-                                <div v-if="log.content" style="font-size:12px;line-height:1.7;white-space:pre-wrap;">{{ log.content }}</div>
-                                <div v-else-if="log.payload" style="font-size:12px;line-height:1.7;white-space:pre-wrap;">{{ JSON.stringify(log.payload, null, 2) }}</div>
-                              </n-space>
-                            </n-list-item>
-                          </n-list>
-                        </n-scrollbar>
-                      </n-card>
-                    </n-spin>
-                  </n-card>
-                </n-card>
-
-                <!-- Edit Node -->
-                <n-collapse style="margin-bottom:12px;">
-                  <n-collapse-item title="编辑节点" name="edit">
-                    <n-form :model="editForm" label-placement="top" size="small">
-                      <n-grid :cols="2" :x-gap="8">
-                        <n-gi>
-                          <n-form-item label="标题">
-                            <n-input v-model:value="editForm.title" />
-                          </n-form-item>
-                        </n-gi>
-                        <n-gi>
-                          <n-form-item label="估时(h)">
-                            <n-input-number v-model:value="editForm.estimate" :min="0" :step="0.5" />
-                          </n-form-item>
-                        </n-gi>
-                      </n-grid>
-                      <n-form-item label="Instruction">
-                        <n-input v-model:value="editForm.instruction" type="textarea" :rows="4" />
-                      </n-form-item>
-                      <n-form-item label="验收标准（一行一条）">
-                        <n-input v-model:value="editForm.acceptance" type="textarea" :rows="3" />
-                      </n-form-item>
-                      <n-form-item label="前置依赖（节点 ID，一行一个）">
-                        <n-input v-model:value="editForm.depends_on" type="textarea" :rows="2" placeholder="粘贴依赖节点的 ID，每行一个" />
-                      </n-form-item>
-                      <n-button type="primary" size="small" :loading="submitting" @click="saveNode">保存节点</n-button>
-                    </n-form>
-                  </n-collapse-item>
-                </n-collapse>
-
-                <!-- Children -->
-                <n-card v-if="selectedChildren.length" size="small" title="子节点" style="margin-bottom:12px;">
-                  <template #header-extra>
-                    <n-space :size="4" align="center">
-                      <n-tag size="small">直接 {{ selectedChildren.length }}</n-tag>
-                      <n-tag v-if="selectedDescendantLeaves.length !== selectedChildren.length" size="small" type="info">叶子 {{ selectedDescendantLeaves.length }}</n-tag>
-                    </n-space>
-                  </template>
-                  <n-list size="small" hoverable clickable>
-                    <n-list-item v-for="child in selectedChildren" :key="child.id" @click="selectNode(child.id)">
-                      <template #prefix>
-                          <n-tooltip>
-                            <template #trigger>
-                              <n-tag :type="statusType(child.status)" size="small" :bordered="false">{{ stateLabel(child.status, child.result) }}</n-tag>
-                            </template>
-                            <span>子节点状态</span>
-                          </n-tooltip>
-                      </template>
-                      <div>
-                        <div style="font-size:13px;font-weight:500;">{{ child.title }}</div>
-                        <n-space :size="4" align="center" style="margin-top:2px;">
-                          <n-text depth="3" style="font-size:11px;">{{ child.path }}</n-text>
-                          <n-text code style="font-size:10px;cursor:pointer;color:var(--n-text-color-3);" @click.stop="copyId(child.id)">{{ child.id.substring(0, 15) }}…</n-text>
-                        </n-space>
-                      </div>
-                      <template #suffix>
-                        <n-space :size="4" align="center">
-                          <n-tag v-if="getChildCount(child.id) > 0" size="small" round>{{ getChildCount(child.id) }}</n-tag>
-                          <n-tag size="small" type="info">{{ nodePct(child) }}%</n-tag>
-                        </n-space>
-                      </template>
-                    </n-list-item>
-                  </n-list>
-                </n-card>
-
-              </template>
-              <n-empty v-else description="选择左侧节点查看详情" />
+              <TaskNodeTab
+                :selected-node="selectedNode"
+                :task-id="props.id"
+                :status-type="statusType"
+                :state-label="stateLabel"
+                :node-pct="nodePct"
+                :is-node-claimed="isNodeClaimed"
+                :claimed-by="claimedBy"
+                :is-fav="isFav"
+                :toggle-fav="toggleFav"
+                :copy-id="copyId"
+                :can-claim="canClaim"
+                :can-release="canRelease"
+                :can-progress="canProgress"
+                :can-complete="canComplete"
+                :can-block="canBlock"
+                :can-unblock="canUnblock"
+                :can-pause="canPause"
+                :can-reopen="canReopen"
+                :can-cancel="canCancel"
+                :can-convert-to-leaf="canConvertToLeaf"
+                :confirm-claim-node="confirmClaimNode"
+                :confirm-release-node="confirmReleaseNode"
+                :confirm-open-progress-modal="confirmOpenProgressModal"
+                :confirm-open-complete-modal="confirmOpenCompleteModal"
+                :confirm-block-node="confirmBlockNode"
+                :confirm-node-transition="confirmNodeTransition"
+                :confirm-retype-node="confirmRetypeNode"
+                :confirm-open-node-create="confirmOpenNodeCreate"
+                :confirm-open-run-start="confirmOpenRunStart"
+                :confirm-open-run-finish="confirmOpenRunFinish"
+                :confirm-open-run-log="confirmOpenRunLog"
+                :parsed-depends-on="parsedDependsOn"
+                :dep-node-status="depNodeStatus"
+                :dep-node-title="depNodeTitle"
+                :select-node="selectNode"
+                :short-time="shortTime"
+                :selected-memory-text="selectedMemoryText"
+                :selected-node-memory="selectedNodeMemory"
+                :node-runs="nodeRuns"
+                :selected-run-id="selectedRunId"
+                :select-run="selectRun"
+                :format-run-actor="formatRunActor"
+                :active-run="activeRun"
+                :selected-run="selectedRun"
+                :run-detail-loading="runDetailLoading"
+                :run-logs-loaded="runLogsLoaded"
+                :load-run-logs="loadRunLogs"
+                :selected-run-logs="selectedRunLogs"
+                :edit-form="editForm"
+                :submitting="submitting"
+                :save-node="saveNode"
+                :selected-children="selectedChildren"
+                :selected-descendant-leaves="selectedDescendantLeaves"
+                :get-child-count="getChildCount"
+              />
             </n-tab-pane>
 
             <!-- Events Tab -->
             <n-tab-pane name="events" :tab="'事件 (' + events.length + ')'">
-              <n-card size="small">
-                <!-- Event scope nav -->
-                <n-space align="center" justify="space-between" style="margin-bottom:10px;">
-                  <n-radio-group v-model:value="eventScope" size="small">
-                    <n-radio-button value="all">全部事件 ({{ events.length }})</n-radio-button>
-                    <n-radio-button value="node" :disabled="!selectedNodeId">
-                      {{ selectedNodeId ? (selectedNode?.title?.substring(0,12) || '当前节点') + (nodeEvents.length ? ' (' + nodeEvents.length + ')' : '') : '未选节点' }}
-                    </n-radio-button>
-                  </n-radio-group>
-                  <n-checkbox v-if="eventScope==='node'" v-model:checked="eventsWarnOnly" size="small">仅异常</n-checkbox>
-                </n-space>
-
-                <!-- All events -->
-                <template v-if="eventScope==='all'">
-                  <n-empty v-if="events.length===0" description="暂无事件" />
-                  <n-scrollbar v-else style="max-height:calc(100vh - 360px);">
-                    <n-timeline>
-                      <n-timeline-item v-for="ev in events" :key="ev.id"
-                        :type="ev.type==='complete'?'success':ev.type==='blocked'?'error':'default'"
-                        :title="eventTypeLabel(ev.type)" :time="shortTime(ev.created_at)">
-                        <n-space :size="4" align="center" style="margin-bottom:2px;">
-                          <n-text depth="3" style="font-size:11px;">{{ ev.node_id ? nodes.find(n=>n.id===ev.node_id)?.path || ev.node_id.substring(0,12) : '' }}</n-text>
-                        </n-space>
-                        <div v-if="ev.message" style="font-size:12px;white-space:pre-wrap;color:var(--n-text-color-2);">{{ ev.message }}</div>
-                        <div v-if="ev.actor_type||ev.actor_id" style="font-size:11px;color:var(--n-text-color-3);">{{ (ev.actor_type||'') + ' ' + (ev.actor_id||'') }}</div>
-                      </n-timeline-item>
-                    </n-timeline>
-                  </n-scrollbar>
-                </template>
-
-                <!-- Node events (with descendants) -->
-                <template v-else>
-                  <n-empty v-if="!selectedNodeId" description="请先在左侧选择一个节点" />
-                  <n-empty v-else-if="filteredNodeEvents.length===0" description="暂无事件" />
-                  <n-scrollbar v-else style="max-height:calc(100vh - 360px);">
-                    <n-timeline>
-                      <n-timeline-item v-for="ev in filteredNodeEvents" :key="ev.id"
-                        :type="ev.type==='complete'?'success':ev.type==='blocked'?'error':'default'"
-                        :title="eventTypeLabel(ev.type)" :time="shortTime(ev.created_at)">
-                        <n-space :size="4" align="center" style="margin-bottom:2px;">
-                          <n-text depth="3" style="font-size:11px;">{{ ev.node_id ? nodes.find(n=>n.id===ev.node_id)?.path || ev.node_id.substring(0,12) : '' }}</n-text>
-                        </n-space>
-                        <div v-if="ev.message" style="font-size:12px;white-space:pre-wrap;color:var(--n-text-color-2);">{{ ev.message }}</div>
-                        <div v-if="ev.actor_type||ev.actor_id" style="font-size:11px;color:var(--n-text-color-3);">{{ (ev.actor_type||'') + ' ' + (ev.actor_id||'') }}</div>
-                      </n-timeline-item>
-                    </n-timeline>
-                  </n-scrollbar>
-                </template>
-              </n-card>
+              <TaskEventsTab
+                v-model:event-scope="eventScope"
+                v-model:events-warn-only="eventsWarnOnly"
+                :events="events"
+                :selected-node-id="selectedNodeId"
+                :selected-node="selectedNode"
+                :node-events="nodeEvents"
+                :nodes="nodes"
+                :event-type-label="eventTypeLabel"
+                :short-time="shortTime"
+              />
             </n-tab-pane>
 
             <!-- Memory Tab -->
             <n-tab-pane name="memory" tab="Memory">
-              <n-collapse :default-expanded-names="['node']">
-                <n-collapse-item title="节点 Memory" name="node">
-                  <template v-if="selectedNode">
-                    <div v-if="nodeMemorySummary" class="memory-summary">{{ nodeMemorySummary }}</div>
-                    <div v-if="selectedNodeMemory?.execution_log" class="memory-execution-log">
-                      <n-text depth="3" class="memory-section-title">执行过程</n-text>
-                      <div class="execution-log-content">{{ selectedNodeMemory.execution_log }}</div>
-                    </div>
-                    <div v-if="nodeMemorySections.length" class="memory-sections">
-                      <div v-for="section in nodeMemorySections" :key="'node-' + section.key" class="memory-section">
-                        <n-text depth="3" class="memory-section-title">{{ section.label }}</n-text>
-                        <n-list size="small" bordered class="memory-list">
-                          <n-list-item v-for="(item, index) in section.items" :key="'node-' + section.key + '-' + index">
-                            <div class="memory-item">{{ formatMemoryItem(item) }}</div>
-                          </n-list-item>
-                        </n-list>
-                      </div>
-                    </div>
-                    <n-input v-model:value="memoryForm.node_note" type="textarea" :rows="2" placeholder="当前节点备注" style="margin-top:8px;" />
-                    <n-button size="tiny" type="primary" class="memory-save-btn" :loading="submitting" @click="saveMemoryNote('node')">保存节点备注</n-button>
-                  </template>
-                  <n-empty v-else description="请先选择节点" size="small" />
-                </n-collapse-item>
-                <n-collapse-item title="阶段 Memory" name="stage">
-                  <template v-if="currentStage">
-                    <div v-if="stageMemorySummary" class="memory-summary">{{ stageMemorySummary }}</div>
-                    <div v-if="currentStageMemory?.execution_log" class="memory-execution-log">
-                      <n-text depth="3" class="memory-section-title">执行过程</n-text>
-                      <div class="execution-log-content">{{ currentStageMemory.execution_log }}</div>
-                    </div>
-                    <div v-if="stageMemorySections.length" class="memory-sections">
-                      <div v-for="section in stageMemorySections" :key="'stage-' + section.key" class="memory-section">
-                        <n-text depth="3" class="memory-section-title">{{ section.label }}</n-text>
-                        <n-list size="small" bordered class="memory-list">
-                          <n-list-item v-for="(item, index) in section.items" :key="'stage-' + section.key + '-' + index">
-                            <div class="memory-item">{{ formatMemoryItem(item) }}</div>
-                          </n-list-item>
-                        </n-list>
-                      </div>
-                    </div>
-                    <n-input v-model:value="memoryForm.stage_note" type="textarea" :rows="2" placeholder="当前阶段备注" style="margin-top:8px;" />
-                    <n-button size="tiny" type="primary" class="memory-save-btn" :loading="submitting" @click="saveMemoryNote('stage')">保存阶段备注</n-button>
-                  </template>
-                  <n-empty v-else description="尚未进入阶段模式" size="small" />
-                </n-collapse-item>
-                <n-collapse-item title="任务 Memory" name="task">
-                  <div v-if="taskMemorySummary" class="memory-summary">{{ taskMemorySummary }}</div>
-                  <div v-if="taskMemory?.execution_log" class="memory-execution-log">
-                    <n-text depth="3" class="memory-section-title">执行过程</n-text>
-                    <div class="execution-log-content">{{ taskMemory.execution_log }}</div>
-                  </div>
-                  <div v-if="taskMemorySections.length" class="memory-sections">
-                    <div v-for="section in taskMemorySections" :key="'task-' + section.key" class="memory-section">
-                      <n-text depth="3" class="memory-section-title">{{ section.label }}</n-text>
-                      <n-list size="small" bordered class="memory-list">
-                        <n-list-item v-for="(item, index) in section.items" :key="'task-' + section.key + '-' + index">
-                          <div class="memory-item">{{ formatMemoryItem(item) }}</div>
-                        </n-list-item>
-                      </n-list>
-                    </div>
-                  </div>
-                  <n-input v-model:value="memoryForm.task_note" type="textarea" :rows="2" placeholder="人工备注写入 task memory.manual_note_text" style="margin-top:8px;" />
-                  <n-button size="tiny" type="primary" class="memory-save-btn" :loading="submitting" @click="saveMemoryNote('task')">保存任务备注</n-button>
-                </n-collapse-item>
-              </n-collapse>
+              <TaskMemoryTab
+                :selected-node="selectedNode"
+                :selected-node-memory="selectedNodeMemory"
+                :node-memory-summary="nodeMemorySummary"
+                :node-memory-sections="nodeMemorySections"
+                :current-stage="currentStage"
+                :current-stage-memory="currentStageMemory"
+                :stage-memory-summary="stageMemorySummary"
+                :stage-memory-sections="stageMemorySections"
+                :task-memory="taskMemory"
+                :task-memory-summary="taskMemorySummary"
+                :task-memory-sections="taskMemorySections"
+                :memory-form="memoryForm"
+                :submitting="submitting"
+                :format-memory-item="formatMemoryItem"
+                @save-note="saveMemoryNote"
+              />
             </n-tab-pane>
 
             <!-- Artifacts Tab -->
             <n-tab-pane name="artifacts" :tab="'产物 (' + artifacts.length + ')'">
-              <n-card size="small">
-                <!-- Add Artifact -->
-                <n-collapse style="margin-bottom:12px;">
-                  <n-collapse-item title="添加产物" name="add">
-                    <n-form :model="artifactForm" label-placement="left" size="small">
-                      <n-grid :cols="2" :x-gap="8">
-                        <n-gi><n-form-item label="标题"><n-input v-model:value="artifactForm.title" placeholder="可选" /></n-form-item></n-gi>
-                        <n-gi><n-form-item label="Kind"><n-input v-model:value="artifactForm.kind" /></n-form-item></n-gi>
-                      </n-grid>
-                      <n-form-item label="URI">
-                        <n-input v-model:value="artifactForm.uri" placeholder="https://... 或 file:///..." />
-                      </n-form-item>
-                      <n-button type="primary" size="small" @click="createArtifact">添加链接</n-button>
-                    </n-form>
-                    <n-divider />
-                    <n-upload :action="'/v1/tasks/'+task.id+'/artifacts/upload'" :data="{node_id:selectedNode?.id||''}"
-                      name="file" @finish="onUploadFinish">
-                      <n-button size="small">上传文件</n-button>
-                    </n-upload>
-                  </n-collapse-item>
-                </n-collapse>
-                <n-empty v-if="selectedArtifacts.length===0" description="暂无产物" />
-                <n-list v-else size="small">
-                  <n-list-item v-for="art in selectedArtifacts" :key="art.id">
-                    <n-thing :title="art.title||art.id" :description="art.uri" content-style="font-size:12px;">
-                      <template #header-extra>
-                        <n-space :size="4">
-                          <n-tag size="small">{{ art.kind || 'link' }}</n-tag>
-                          <n-tag size="small">{{ shortTime(art.created_at) }}</n-tag>
-                          <n-button v-if="(art.uri||'').startsWith('local://')" size="tiny" type="primary" quaternary
-                            tag="a" :href="'/v1/artifacts/'+art.id+'/download'" target="_blank">下载</n-button>
-                        </n-space>
-                      </template>
-                    </n-thing>
-                  </n-list-item>
-                </n-list>
-              </n-card>
+              <TaskArtifactsTab
+                :selected-artifacts="selectedArtifacts"
+                :artifact-form="artifactForm"
+                :task-id="task.id"
+                :selected-node-id="selectedNode?.id || ''"
+                :short-time="shortTime"
+                @create-artifact="createArtifact"
+                @upload-finish="onUploadFinish"
+              />
             </n-tab-pane>
           </n-tabs>
         </n-gi>
@@ -758,7 +428,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, h, reactive, inject, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { NTag, NRadioGroup, NRadioButton } from 'naive-ui'
+import { NTag } from 'naive-ui'
 import {
   api,
   statusType,
@@ -780,10 +450,11 @@ import {
   patchTaskMemory,
   patchStageMemory,
   patchNodeMemory,
+  listEvents,
+  listTaskArtifacts,
   listNodeRuns,
   fetchRun,
   createTaskArtifact,
-  listAllNodes,
   listStages,
   createStage,
   activateStage,
@@ -792,6 +463,10 @@ import {
   addRunLog,
   dirtyTargets,
 } from '../api.js'
+import TaskEventsTab from '../components/TaskEventsTab.vue'
+import TaskMemoryTab from '../components/TaskMemoryTab.vue'
+import TaskArtifactsTab from '../components/TaskArtifactsTab.vue'
+import TaskNodeTab from '../components/TaskNodeTab.vue'
 
 const props = defineProps(['id'])
 const router = useRouter()
@@ -818,12 +493,16 @@ const stages = ref([])
 const treeMode = ref('full')
 const summaryMode = ref(true)
 const selectedNodeId = ref('')
-const selectedNode = ref(null)
+const selectedNodeSummary = ref(null)
+const selectedNode = selectedNodeSummary
 const selectedChildren = ref([])
 const selectedDescendantLeaves = ref([])
-const nodeEvents = ref([])
-const nodeArtifacts = ref([])
-const nodeRuns = ref([])
+const selectedNodeEvents = ref([])
+const nodeEvents = selectedNodeEvents
+const selectedNodeArtifacts = ref([])
+const nodeArtifacts = selectedNodeArtifacts
+const selectedNodeRuns = ref([])
+const nodeRuns = selectedNodeRuns
 const selectedNodeMemory = ref(null)
 const selectedStageSummary = ref(null)
 const expandedKeys = ref([])
@@ -860,6 +539,7 @@ const memoryForm = reactive({ task_note: '', stage_note: '', node_note: '' })
 const selectedRunId = ref('')
 const selectedRunDetail = ref(null)
 const runDetailLoading = ref(false)
+const runLogsLoaded = ref(false)
 
 const templateOpts = [
   { label: '无模板', value: null },
@@ -870,7 +550,7 @@ const templateOpts = [
 
 const taskPct = computed(() => task.value ? pct(task.value.summary_percent) : 0)
 const treeData = computed(() => buildTreeData(nodes.value))
-const selectedArtifacts = computed(() => nodeArtifacts.value.length ? nodeArtifacts.value : artifacts.value)
+const selectedArtifacts = computed(() => selectedNode.value ? nodeArtifacts.value : artifacts.value)
 const taskSummaryText = computed(() => excerpt(taskMemory.value?.summary || task.value?.goal || '', 140))
 const stageSummaryText = computed(() => excerpt(currentStageMemory.value?.summary || currentStage.value?.title || '', 120))
 const selectedMemoryText = computed(() => excerpt(selectedNodeMemory.value?.summary || selectedNode.value?.instruction || '', 160))
@@ -1128,6 +808,75 @@ function syncMemoryForms() {
   memoryForm.node_note = selectedNodeMemory.value?.manual_note_text || ''
 }
 
+function buildResumeInclude(tab) {
+  const include = []
+  if (tab === 'memory') include.push('task_memory', 'stage_memory')
+  if (tab === 'events') include.push('events')
+  if (tab === 'artifacts') include.push('artifacts')
+  return include
+}
+
+function nodeContextPresetForTab(tab) {
+  if (tab === 'node') return 'summary'
+  if (tab === 'memory') return 'memory'
+  return 'summary'
+}
+
+async function loadResumeMemorySlices(force = false) {
+  if (!force && taskMemory.value && (!currentStage.value || currentStageMemory.value)) return
+  const resume = await fetchTaskResume(props.id, {
+    view_mode: 'summary',
+    limit: 1,
+    include: ['task_memory', 'stage_memory'],
+  }).catch(() => null)
+  if (!resume) return
+  taskMemory.value = resume.task_memory || null
+  currentStage.value = normalizeNode(resume.current_stage || null)
+  currentStageMemory.value = resume.current_stage_memory || null
+  syncMemoryForms()
+}
+
+async function loadGlobalEvents(force = false) {
+  if (!force && events.value.length) return
+  events.value = await listEvents({ task_id: props.id, limit: 100, view_mode: 'summary' }).catch(() => [])
+}
+
+async function loadNodeEvents(nodeId, force = false, initialEvents = null) {
+  if (!nodeId) {
+    nodeEvents.value = []
+    return
+  }
+  if (!force && Array.isArray(initialEvents)) {
+    nodeEvents.value = initialEvents
+    return
+  }
+  nodeEvents.value = await listEvents({
+    task_id: props.id,
+    node_id: nodeId,
+    include_descendants: true,
+    limit: 100,
+    view_mode: 'summary',
+  }).catch(() => [])
+}
+
+async function loadGlobalArtifacts(force = false) {
+  if (!force && artifacts.value.length) return
+  artifacts.value = await listTaskArtifacts(props.id, { limit: 100, view_mode: 'summary' }).catch(() => [])
+}
+
+async function loadNodeArtifacts(nodeId, force = false) {
+  if (!nodeId) {
+    nodeArtifacts.value = []
+    return
+  }
+  if (!force && nodeArtifacts.value.length) return
+  nodeArtifacts.value = await listTaskArtifacts(props.id, {
+    node_id: nodeId,
+    limit: 100,
+    view_mode: 'summary',
+  }).catch(() => [])
+}
+
 function memorySummary(memory) {
   if (!memory) return ''
   return memory.summary_text || memory.summary || ''
@@ -1171,10 +920,12 @@ async function selectRun(runId) {
   if (!runId) {
     selectedRunId.value = ''
     selectedRunDetail.value = null
+    runLogsLoaded.value = false
     return
   }
   selectedRunId.value = runId
   runDetailLoading.value = true
+  runLogsLoaded.value = false
   try {
     selectedRunDetail.value = await fetchRun(runId)
   } catch (e) {
@@ -1182,6 +933,68 @@ async function selectRun(runId) {
     window.$message?.error('加载 Run 详情失败: ' + e.message)
   } finally {
     runDetailLoading.value = false
+  }
+}
+
+async function loadRunLogs(force = false) {
+  const runId = selectedRunId.value
+  if (!runId || (runLogsLoaded.value && !force)) return
+  runDetailLoading.value = true
+  try {
+    selectedRunDetail.value = await fetchRun(runId, { include_logs: true })
+    runLogsLoaded.value = true
+  } catch (e) {
+    window.$message?.error('加载 Run 日志失败: ' + e.message)
+  } finally {
+    runDetailLoading.value = false
+  }
+}
+
+async function hydrateSelectedTab(nodeId, opts = {}) {
+  const force = !!opts.force
+  const previousRunId = opts.previousRunId || ''
+  if (activeTab.value === 'node') {
+    const context = opts.context || await fetchNodeContext(nodeId, { preset: 'summary' }).catch(() => null)
+    selectedNodeMemory.value = null
+    selectedStageSummary.value = null
+    nodeRuns.value = await listNodeRuns(nodeId, 10).catch(() => [])
+    const keepRunId = previousRunId && nodeRuns.value.some(r => (r.id || r.run_id) === previousRunId) ? previousRunId : ''
+    const initialRunId = keepRunId || activeRun.value?.id || activeRun.value?.run_id || nodeRuns.value[0]?.id || nodeRuns.value[0]?.run_id || ''
+    if (initialRunId) await selectRun(initialRunId)
+    else {
+      selectedRunId.value = ''
+      selectedRunDetail.value = null
+      runLogsLoaded.value = false
+    }
+    syncMemoryForms()
+    return
+  }
+  selectedRunId.value = ''
+  selectedRunDetail.value = null
+  runLogsLoaded.value = false
+  if (activeTab.value === 'memory') {
+    const context = opts.context || await fetchNodeContext(nodeId, { preset: 'memory' }).catch(() => null)
+    selectedNodeMemory.value = context?.memory || null
+    selectedStageSummary.value = context?.stage_summary || null
+    await loadResumeMemorySlices(force)
+    if (selectedStageSummary.value?.memory && currentStage.value?.id === selectedStageSummary.value?.stage?.id) {
+      currentStageMemory.value = selectedStageSummary.value.memory
+    }
+    syncMemoryForms()
+    return
+  }
+  selectedNodeMemory.value = null
+  selectedStageSummary.value = null
+  nodeRuns.value = []
+  syncMemoryForms()
+  if (activeTab.value === 'events') {
+    await loadGlobalEvents(force)
+    await loadNodeEvents(nodeId, force, opts.initialEvents)
+    return
+  }
+  if (activeTab.value === 'artifacts') {
+    await loadGlobalArtifacts(force)
+    await loadNodeArtifacts(nodeId, force)
   }
 }
 
@@ -1193,11 +1006,20 @@ async function selectNode(nodeId, opts = {}) {
   if (!nodeId) return
   selectedNodeId.value = nodeId
   try {
+    const preset = nodeContextPresetForTab(activeTab.value)
     const fallbackNode = normalizeNode((!opts.forceFetch && (opts.node || nodes.value.find(n => n.id === nodeId))) || null)
-    const context = await fetchNodeContext(nodeId).catch(() => null)
+    const context = await fetchNodeContext(nodeId, { preset }).catch(() => null)
     const contextNode = normalizeNode(context?.node || null)
     const node = contextNode || fallbackNode || normalizeNode(await api('/nodes/' + nodeId))
+    const previousRunId = opts.forceFetch ? selectedRunId.value : ''
     selectedNode.value = node
+    selectedNodeMemory.value = null
+    selectedStageSummary.value = null
+    nodeRuns.value = []
+    nodeArtifacts.value = []
+    if (!(!opts.forceFetch && Array.isArray(opts.events) && activeTab.value === 'events')) {
+      nodeEvents.value = []
+    }
     editForm.title = node.title || ''
     editForm.estimate = node.estimate || null
     editForm.instruction = node.instruction || ''
@@ -1206,25 +1028,12 @@ async function selectNode(nodeId, opts = {}) {
     const depsArr = typeof depsRaw === 'string' ? (JSON.parse(depsRaw || '[]')) : (Array.isArray(depsRaw) ? depsRaw : [])
     editForm.depends_on = depsArr.filter(Boolean).join('\n')
     updateSelectedRelationships(nodeId)
-    selectedNodeMemory.value = context?.memory || null
-    selectedStageSummary.value = context?.stage_summary || null
-    nodeRuns.value = context?.recent_runs || await listNodeRuns(nodeId, 10).catch(() => [])
-    nodeArtifacts.value = context?.artifacts || []
-    // Preserve current run selection on refresh; only auto-select on first load
-    const prevRunId = opts.forceFetch ? selectedRunId.value : ''
-    const keepRunId = prevRunId && nodeRuns.value.some(r => (r.id || r.run_id) === prevRunId) ? prevRunId : ''
-    const initialRunId = keepRunId || activeRun.value?.id || activeRun.value?.run_id || nodeRuns.value[0]?.id || nodeRuns.value[0]?.run_id || ''
-    if (initialRunId) await selectRun(initialRunId)
-    else {
-      selectedRunId.value = ''
-      selectedRunDetail.value = null
-    }
-    if (selectedStageSummary.value?.memory && currentStage.value?.id === selectedStageSummary.value?.stage?.id) {
-      currentStageMemory.value = selectedStageSummary.value.memory
-    }
-    syncMemoryForms()
-    if (!opts.forceFetch && Array.isArray(opts.events)) nodeEvents.value = opts.events
-    else nodeEvents.value = context?.recent_events || []
+    await hydrateSelectedTab(nodeId, {
+      force: opts.forceFetch,
+      context,
+      initialEvents: !opts.forceFetch && Array.isArray(opts.events) ? opts.events : null,
+      previousRunId,
+    })
   } catch (e) {
     window.$message?.error('加载节点失败: ' + e.message)
   }
@@ -1237,6 +1046,7 @@ async function load() {
     const resume = await fetchTaskResume(props.id, {
       limit: treeMode.value === 'focus' ? 200 : 10000,
       include_full_tree: treeMode.value === 'full',
+      include: buildResumeInclude(activeTab.value),
       debug: 1,
     })
     applyTaskSnapshot(resume.task || {})
@@ -1246,8 +1056,7 @@ async function load() {
     recentRuns.value = resume.recent_runs || []
     await loadStages()
     if (treeMode.value === 'full') {
-      const allNodesResult = await listAllNodes(props.id)
-      nodes.value = normalizeNodeList(allNodesResult.items || allNodesResult || [])
+      nodes.value = normalizeNodeList(resume.full_tree || resume.tree || [])
     } else {
       nodes.value = normalizeNodeList(resume.tree || [])
     }
@@ -1267,9 +1076,7 @@ async function load() {
     if (expandedKeys.value.length === 0) expandedKeys.value = [...parentIds]
 
     // Update next_node reference (for the "下一步" button)
-    if (resume.next_node?.node) {
-      nextNode.value = normalizeNode(resume.next_node.node)
-    }
+    nextNode.value = resume.next_node_summary ? normalizeNode(resume.next_node_summary) : null
 
     // Select node: keep current selection on refresh, only auto-select on first load
     const currentId = selectedNodeId.value
@@ -1281,7 +1088,7 @@ async function load() {
     } else if (nextNode.value) {
       const nextId = nextNode.value.id
       const node = nodes.value.find(n => n.id === nextId)
-      const selectOpts = { events: resume.next_node?.recent_events || [] }
+      const selectOpts = {}
       if (node) selectOpts.node = node
       await selectNode(nextId, selectOpts)
     } else if (nodes.value.length > 0) {
@@ -1844,9 +1651,24 @@ const stopWatchRouteNode = watch(() => route.query.node, (nodeId) => {
     selectNode(nodeId)
   }
 })
+const stopWatchActiveTab = watch(activeTab, async (tab, prev) => {
+  if (!task.value || tab === prev) return
+  const nextQuery = { ...route.query }
+  if (tab === 'node') delete nextQuery.tab
+  else nextQuery.tab = tab
+  router.replace({ query: nextQuery }).catch(() => {})
+  if (!selectedNodeId.value) {
+    if (tab === 'memory') await loadResumeMemorySlices(true)
+    if (tab === 'events') await loadGlobalEvents(false)
+    if (tab === 'artifacts') await loadGlobalArtifacts(false)
+    return
+  }
+  await hydrateSelectedTab(selectedNodeId.value, { force: true })
+})
 onUnmounted(() => {
   stopWatchTaskId()
   stopWatchRouteNode()
+  stopWatchActiveTab()
   if (eventSource) { eventSource.close(); eventSource = null }
 })
 </script>
@@ -1862,53 +1684,81 @@ onUnmounted(() => {
 }
 
 .memory-summary {
-  font-size: 11px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.6;
   white-space: pre-wrap;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: var(--n-color-modal);
+  border-radius: 4px;
+  border-left: 3px solid var(--n-primary-color);
 }
 
-.memory-execution-log {
-  margin-bottom: 6px;
+.execution-log-section {
+  margin: 6px 0;
+}
+
+.execution-log-header {
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 4px;
+  user-select: none;
+}
+
+.execution-log-header:hover {
+  background: var(--n-color-modal);
+}
+
+.execution-log-body {
+  margin-top: 4px;
 }
 
 .execution-log-content {
-  font-size: 11px;
-  line-height: 1.6;
+  font-size: 13px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  line-height: 1.75;
   white-space: pre-wrap;
-  max-height: 300px;
+  word-break: break-word;
   overflow-y: auto;
-  padding: 6px 8px;
-  margin-top: 3px;
+  padding: 12px 14px;
   background: var(--n-color-modal);
   border-radius: 4px;
   border: 1px solid var(--n-border-color);
+  border-left: 3px solid #18a058;
+}
+
+.execution-log-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 0 4px;
 }
 
 .memory-sections {
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .memory-section {
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .memory-section-title {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
 }
 
 .memory-list {
-  margin-top: 3px;
+  margin-top: 4px;
 }
 
 .memory-item {
-  font-size: 11px;
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 1.6;
   white-space: pre-wrap;
 }
 
 .memory-save-btn {
-  margin-top: 6px;
+  margin-top: 8px;
 }
 </style>

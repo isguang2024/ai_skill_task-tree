@@ -94,3 +94,87 @@
 ### 下次方向
 - 当前只剩性能/工程化类非阻塞事项，例如前端 bundle 体积偏大、`TaskDetail.vue` 可继续拆组件。
 - 如果还要继续推进，我会优先处理前端拆包和组件分层。 
+
+## 2026-04-14 渐进读取全量收口
+
+### 本次改动
+- 把节点/运行/产物读取统一成默认轻量模型：`/tasks/{id}/nodes` 默认返回 summary，补齐 `parent_node_id`、`subtree_root_node_id`、`max_relative_depth`，并把 run/artifact 路由都改成支持 `view_mode`、`limit`、`cursor`。
+- 节点上下文新增 `summary/work/memory/full` 预设，前端节点选中默认只拿 `preset=work`，任务详情 full 模式直接复用 `resume.full_tree`，项目列表改走 `summary_with_stats`，去掉项目页 fan-out 概览请求。
+- 内置 AI 和 MCP 一并改成摘要优先：新增 `resume_task`、`list_nodes_summary`、`get_node_context`、`claim_and_start_run`、`batch_create_nodes`、`import_plan`、`smart_search` 等工具入口，并补上子树展开、run logs 开关、artifact summary 的参数模型。
+
+### 验证
+- `go test ./internal/tasktree -run 'TestDependsOnSummaryAndExecutionOrder|TestFocusFilterAppliesBeforePagination|TestResumeHonorsTreePagingAndResumeContextSiblings|TestNodesDefaultSummaryAndSubtreeFilters|TestNodeContextPresetRunAndArtifactSummary|TestProjectsSummaryWithStats|TestSmokeFlow|TestRunRoutesAndSyntheticCompatibility'` 通过。
+
+### 下次方向
+- 继续把前端节点详情拆成按 tab 懒加载，避免 `TaskDetail.vue` 在选中节点时仍然预取过多上下文。
+- 如果要继续推进 HTTP/MCP 对齐，可以补 `list_children` / `list_subtree_summary` 这类显式子树接口，减少调用方手拼过滤参数。 
+
+## 2026-04-14 Resume 轻量默认与节点页懒加载
+
+### 本次改动
+- `resume` 新增 `include` 模型，默认不再附带 `events`、`runs`、`artifacts`、`next_node_context` 这类重内容；HTTP 路由、MCP 和内部调用统一走同一套解析与执行逻辑。
+- 前端 `TaskDetail.vue` 改成按当前 tab 取数：节点页按 `preset=work`，Memory 页按 `preset=memory`，事件页和产物页再分别补拉 `/events`、`/tasks/{id}/artifacts`，同时 `resume` 只在需要的 tab 上显式请求对应 include。
+- 新增 `/events` 与 task artifacts 的前端 API wrapper，并补测试锁住 `resume` 的轻量默认与 `include` 按需展开行为。
+
+### 验证
+- `go test ./internal/tasktree -run 'TestDependsOnSummaryAndExecutionOrder|TestFocusFilterAppliesBeforePagination|TestResumeHonorsTreePagingAndResumeContextSiblings|TestResumeIncludesOptInHeavySections|TestNodesDefaultSummaryAndSubtreeFilters|TestNodeContextPresetRunAndArtifactSummary|TestProjectsSummaryWithStats|TestSmokeFlow|TestRunRoutesAndSyntheticCompatibility'` 通过。
+- `npm run build` 通过。
+
+### 下次方向
+- 继续把节点页里仍然放在 `work` preset 里的 runs/event/artifact 细项拆得更细，避免“节点 tab”本身继续捎带不必要数据。
+- 如果继续做协议层收口，下一步适合补 `task_tree_list_children` / `task_tree_list_subtree_summary` 这类更显式的 MCP 工具。 
+
+## 2026-04-14 剩余读模型修复收口
+
+### 本次改动
+- 修正 `/resume` 的过滤门控，把 `parent_node_id`、`subtree_root_node_id`、`max_relative_depth`、`has_children` 也纳入过滤树判定，避免“参数能传但实际不生效”。
+- `resume` 的 `current_stage_memory` 改成和 `task_memory` 一样的轻摘要结构，并补上 `summary` 别名；`projectOverview` 去掉逐任务 `getRemaining/findNode/getTaskMemory` 的 N+1，改成节点汇总、阶段摘要、memory 摘要的批量查询。
+- 前端修正 `nextNode` 在无后继节点时的陈旧值问题，把 `listAllNodes` 收口成 `listNodeDetails`（保留兼容别名），并把内置 AI 默认读法从 `preset=work` 收紧到先 `preset=summary`。
+
+### 验证
+- `go test ./internal/tasktree -run 'TestDependsOnSummaryAndExecutionOrder|TestFocusFilterAppliesBeforePagination|TestResumeHonorsTreePagingAndResumeContextSiblings|TestResumeIncludesOptInHeavySections|TestNodesDefaultSummaryAndSubtreeFilters|TestNodeContextPresetRunAndArtifactSummary|TestProjectsSummaryWithStats|TestSmokeFlow|TestRunRoutesAndSyntheticCompatibility|TestMemoryAndReadModelFlow'` 通过。
+- `npm run build` 通过。
+
+### 下次方向
+- 继续把 `projectOverview` 的 task list 也裁成更明确的 summary DTO，避免列表页继续持有不必要字段。
+- 如果要继续压前端体积，下一步直接做 `TaskDetail.vue` 的拆组件和按路由/按 tab 分包。 
+
+## 2026-04-14 渐进式读取第二阶段收口
+
+### 本次改动
+- `/resume` 继续收轻：默认只保留 `task`、`task_memory_summary`、`current_stage`、`tree`、`remaining`、`recommended_action`、`next_node_summary`，`task_memory` / `stage_memory` / `events` / `runs` / `artifacts` / `next_node_context` 全部改成显式 `include`。
+- MCP 补齐显式局部展开工具：新增 `task_tree_list_children` 与 `task_tree_list_subtree_summary`，`task_tree_resume` 也同步支持 `parent_node_id`、`subtree_root_node_id`、`max_relative_depth`、`has_children` 和新的 memory include 项。
+- 内置 AI 与前端节点页继续拆轻：AI `get_task` 默认不再隐式拼树；`TaskDetail.vue` 的 node tab 改成 `preset=summary + 单独 runs`，run 日志改成按需加载；项目概览任务列表也裁成 summary DTO，前端只消费 `remaining/current_stage/memory.summary` 这类摘要字段。
+
+### 验证
+- `go test ./internal/tasktree -run 'TestMemoryAndReadModelFlow|TestResumeIncludesOptInHeavySections|TestMCPChildrenAndSubtreeSummaryTools|TestAIToolGetTaskRequiresExplicitTree|TestDependsOnSummaryAndExecutionOrder|TestFocusFilterAppliesBeforePagination|TestResumeHonorsTreePagingAndResumeContextSiblings|TestNodesDefaultSummaryAndSubtreeFilters|TestNodeContextPresetRunAndArtifactSummary|TestProjectsSummaryWithStats|TestSmokeFlow|TestRunRoutesAndSyntheticCompatibility'` 通过。
+
+### 下次方向
+- `TaskDetail.vue` 仍然偏大，后续可以把节点详情、memory、run 详情拆成独立组件，继续降低单文件复杂度。
+- 如果继续做性能收尾，下一步优先看前端大 chunk 分包和项目页定时刷新策略。 
+
+## 2026-04-14 前端分包与详情页拆分收尾
+
+### 本次改动
+- 路由组件全部改成按页懒加载，并在 `vite.config.js` 里补上 `vue-core / vue-router / naive-ui` 的 manual chunk，构建产物从单包切成了多页面 chunk。
+- `TaskDetail.vue` 把 `events / memory / artifacts` 三个 tab 抽成独立组件，节点页继续保留主流程逻辑，run 日志仍是按需加载，文件复杂度继续下降。
+- `TaskDetail.vue` 的 node 主面板也已接到独立的 `TaskNodeTab.vue`，详情页主文件现在只负责状态编排和接口调度，后续拆 run 详情或节点概览都可以继续在子组件内推进。
+- `TaskList.vue` 继续沿用 summary DTO 读法，项目页与详情页的前端入口都保持在轻量读取模型上。
+
+### 验证
+- `npm run build` 通过。
+
+### 下次方向
+- 当前最大的剩余 chunk 还是 `naive-ui`，如果还要继续压体积，下一步应该评估按需引入或更细的 vendor 拆分。
+- `TaskDetail.vue` 的主文件已经缩到状态层，下一步更适合继续拆 `TaskNodeTab.vue` 里的 run 详情或节点概览子区块。 
+
+## 2026-04-14 文档与技能同步收尾
+
+### 本次改动
+- 把渐进式读取第二阶段收口后的最新规则写回仓库文档，统一了 `/resume` 轻默认、`children / subtree` 下钻、`get_task(include_tree)`、`get_run(include_logs)`、`preset=summary/memory/work/full` 等最新约定。
+- 更新了技能主文档和 `skill/docs` 三份参考文档，把 MCP 清单、推荐读取顺序、行为规则、HTTP 边界统一成和当前实现一致的版本。
+- 将仓库内最新 `skill/` 文档同步到 `C:\\Users\\Administrator\\.codex\\skills\\task-tree\\` 与 `C:\\Users\\Administrator\\.claude\\skills\\task-tree\\`，避免全局技能目录继续停留在旧规则。
+
+### 下次方向
+- 如果继续做发布侧收尾，优先检查 DXT 包内引用的技能/说明是否也需要跟着同步版本说明。
+- 工程侧剩余工作主要还是前端 chunk 继续优化和 `TaskNodeTab.vue` 内部再细拆。 

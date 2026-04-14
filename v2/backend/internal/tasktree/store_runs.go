@@ -274,33 +274,75 @@ func (a *App) addRunLog(ctx context.Context, runID string, body runLogCreate) (j
 }
 
 func (a *App) getRun(ctx context.Context, runID string) (jsonMap, error) {
+	return a.getRunWithOptions(ctx, runID, runListOptions{IncludeLogs: true})
+}
+
+func (a *App) getRunWithOptions(ctx context.Context, runID string, opts runListOptions) (jsonMap, error) {
 	run, err := a.findRun(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
-	logs, err := a.listRunLogs(ctx, runID)
-	if err != nil {
-		return nil, err
+	if opts.IncludeLogs {
+		logs, err := a.listRunLogs(ctx, runID)
+		if err != nil {
+			return nil, err
+		}
+		run["logs"] = logs
 	}
 	run["run_id"] = asString(run["id"])
-	run["logs"] = logs
+	if structured := asAnyMap(run["structured_result"]); structured != nil {
+		run["latest_result_payload"] = structured
+	} else {
+		run["latest_result_payload"] = map[string]any{}
+	}
 	return run, nil
 }
 
 func (a *App) listNodeRuns(ctx context.Context, nodeID string, limit int) ([]jsonMap, error) {
+	result, err := a.listNodeRunsWithOptions(ctx, nodeID, runListOptions{Limit: limit, ViewMode: "detail"})
+	if err != nil {
+		return nil, err
+	}
+	return workspaceAsItems(result["items"]), nil
+}
+
+func (a *App) listNodeRunsWithOptions(ctx context.Context, nodeID string, opts runListOptions) (jsonMap, error) {
 	if _, err := a.findNode(ctx, nodeID, false); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
-		limit = 20
+	if opts.Limit <= 0 {
+		opts.Limit = 20
 	}
-	rows, err := a.queryContext(ctx, `SELECT * FROM node_runs WHERE node_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, nodeID, limit)
+	viewMode := strings.ToLower(strings.TrimSpace(opts.ViewMode))
+	if viewMode == "" {
+		viewMode = "summary"
+	}
+	selectFields := `id, task_id, node_id, stage_node_id, actor_type, actor_id, trigger_kind, status, output_preview, output_ref, result, structured_result_json, started_at, finished_at, created_at, updated_at`
+	if viewMode == "detail" {
+		selectFields = `*`
+	}
+	query := `SELECT ` + selectFields + ` FROM node_runs WHERE node_id = ?`
+	args := []any{nodeID}
+	if opts.Cursor != "" {
+		parts := strings.SplitN(opts.Cursor, "|", 2)
+		if len(parts) == 2 {
+			query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+			args = append(args, parts[0], parts[0], parts[1])
+		}
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, opts.Limit+1)
+	rows, err := a.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	items, err := scanRows(rows)
 	if err != nil {
 		return nil, err
+	}
+	hasMore := len(items) > opts.Limit
+	if hasMore {
+		items = items[:opts.Limit]
 	}
 	for _, item := range items {
 		item["run_id"] = asString(item["id"])
@@ -310,7 +352,12 @@ func (a *App) listNodeRuns(ctx context.Context, nodeID string, limit int) ([]jso
 			item["latest_result_payload"] = map[string]any{}
 		}
 	}
-	return items, nil
+	nextCursor := any(nil)
+	if hasMore && len(items) > 0 {
+		last := items[len(items)-1]
+		nextCursor = asString(last["created_at"]) + "|" + asString(last["id"])
+	}
+	return jsonMap{"items": items, "has_more": hasMore, "next_cursor": nextCursor}, nil
 }
 
 func (a *App) listTaskRuns(ctx context.Context, taskID string, limit int) ([]jsonMap, error) {
@@ -320,7 +367,7 @@ func (a *App) listTaskRuns(ctx context.Context, taskID string, limit int) ([]jso
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := a.queryContext(ctx, `SELECT * FROM node_runs WHERE task_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?`, taskID, limit)
+	rows, err := a.queryContext(ctx, `SELECT id, task_id, node_id, stage_node_id, actor_type, actor_id, trigger_kind, status, result, output_preview, output_ref, structured_result_json, started_at, finished_at, created_at, updated_at FROM node_runs WHERE task_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?`, taskID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +402,7 @@ func (a *App) findRun(ctx context.Context, runID string) (jsonMap, error) {
 }
 
 func (a *App) listRunLogs(ctx context.Context, runID string) ([]jsonMap, error) {
-	rows, err := a.queryContext(ctx, `SELECT * FROM run_logs WHERE run_id = ? ORDER BY seq ASC, id ASC`, runID)
+	rows, err := a.queryContext(ctx, `SELECT id, run_id, seq, kind, content, payload_json, created_at FROM run_logs WHERE run_id = ? ORDER BY seq ASC, id ASC`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -382,6 +429,50 @@ func (a *App) ensureSyntheticRun(ctx context.Context, node jsonMap, triggerKind 
 		TriggerKind:  &trigger,
 		InputSummary: message,
 	})
+}
+
+// aggregateNodeRunLogs queries all run_logs for a node (across all runs),
+// formats them into a human-readable execution_log string.
+// This replaces manual AI-written execution_log with auto-captured data.
+func (a *App) aggregateNodeRunLogs(ctx context.Context, nodeID string) (string, error) {
+	rows, err := a.queryContext(ctx, `
+		SELECT rl.kind, rl.content, rl.payload_json, rl.created_at,
+		       nr.trigger_kind, nr.actor_type, nr.actor_id
+		FROM run_logs rl
+		JOIN node_runs nr ON rl.run_id = nr.id
+		WHERE nr.node_id = ?
+		ORDER BY rl.created_at ASC, rl.seq ASC`, nodeID)
+	if err != nil {
+		return "", err
+	}
+	items, err := scanRows(rows)
+	if err != nil {
+		return "", err
+	}
+	if len(items) == 0 {
+		return "", nil
+	}
+	var sb strings.Builder
+	for _, item := range items {
+		ts := asString(item["created_at"])
+		if len(ts) >= 19 {
+			ts = ts[:10] + " " + ts[11:19] // "2026-04-14 06:30:00"
+		}
+		kind := asString(item["kind"])
+		content := asString(item["content"])
+		progress := ""
+		if payload := asAnyMap(item["payload"]); payload != nil {
+			if p, ok := payload["progress"]; ok {
+				progress = fmt.Sprintf(" [%.0f%%]", asFloat(p)*100)
+			}
+		}
+		if content == "" {
+			sb.WriteString(fmt.Sprintf("[%s] (%s)%s\n", ts, kind, progress))
+		} else {
+			sb.WriteString(fmt.Sprintf("[%s] (%s)%s %s\n", ts, kind, progress, content))
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n"), nil
 }
 
 func nullableString(v *string) any {

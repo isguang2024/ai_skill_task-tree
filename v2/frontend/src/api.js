@@ -46,12 +46,14 @@ export function fetchTaskResume(taskId, params = {}) {
   return api('/tasks/' + taskId + '/resume' + (query ? '?' + query : ''))
 }
 
-export function fetchNodeContext(nodeId) {
-  return api('/nodes/' + nodeId + '/context')
+export function fetchNodeContext(nodeId, params = {}) {
+  const query = buildQuery(params)
+  return api('/nodes/' + nodeId + '/context' + (query ? '?' + query : ''))
 }
 
-export function fetchProjectOverview(projectId) {
-  return api('/projects/' + projectId + '/overview')
+export function fetchProjectOverview(projectId, params = {}) {
+  const query = buildQuery(params)
+  return api('/projects/' + projectId + '/overview' + (query ? '?' + query : ''))
 }
 
 export function fetchTaskMemory(taskId) {
@@ -70,16 +72,34 @@ export function patchStageMemory(stageId, body) {
   return api('/stages/' + stageId + '/memory', { method: 'PATCH', body: JSON.stringify(body) })
 }
 
-export function fetchNodeMemory(nodeId) {
-  return api('/nodes/' + nodeId + '/memory')
+export function fetchNodeMemory(nodeId, level = 'structured') {
+  const q = level ? '?level=' + level : ''
+  return api('/nodes/' + nodeId + '/memory' + q)
+}
+
+// Fetch only execution_log field (lazy load for long content)
+export function fetchNodeExecutionLog(nodeId) {
+  return api('/nodes/' + nodeId + '/memory?level=full').then(m => m?.execution_log || '')
 }
 
 export function patchNodeMemory(nodeId, body) {
   return api('/nodes/' + nodeId + '/memory', { method: 'PATCH', body: JSON.stringify(body) })
 }
 
-export function listAllNodes(taskId, limit = 10000) {
-  return api('/tasks/' + taskId + '/nodes?' + buildQuery({ limit }))
+export function listNodeDetails(taskId, limit = 10000) {
+  return api('/tasks/' + taskId + '/nodes?' + buildQuery({ limit, view_mode: 'detail' }))
+}
+
+export const listAllNodes = listNodeDetails
+
+export function listEvents(params = {}) {
+  const query = buildQuery(params)
+  return api('/events' + (query ? '?' + query : '')).then(res => res.items || res || [])
+}
+
+export function listTaskArtifacts(taskId, params = {}) {
+  const query = buildQuery(params)
+  return api('/tasks/' + taskId + '/artifacts' + (query ? '?' + query : '')).then(res => res.items || res || [])
 }
 
 export function listStages(taskId) {
@@ -95,15 +115,16 @@ export function activateStage(taskId, stageNodeId) {
 }
 
 export function listNodeRuns(nodeId, limit = 20) {
-  return api('/nodes/' + nodeId + '/runs?' + buildQuery({ limit }))
+  return api('/nodes/' + nodeId + '/runs?' + buildQuery({ limit, view_mode: 'summary' })).then(res => res.items || res || [])
 }
 
 export function startNodeRun(nodeId, body = {}) {
   return api('/nodes/' + nodeId + '/runs', { method: 'POST', body: JSON.stringify(body) })
 }
 
-export function fetchRun(runId) {
-  return api('/runs/' + runId)
+export function fetchRun(runId, params = {}) {
+  const query = buildQuery(params)
+  return api('/runs/' + runId + (query ? '?' + query : ''))
 }
 
 export function finishRun(runId, body = {}) {

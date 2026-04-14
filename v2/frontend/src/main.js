@@ -2,12 +2,13 @@ import { createApp } from 'vue'
 import { createRouter, createWebHashHistory } from 'vue-router'
 import naive from 'naive-ui'
 import App from './App.vue'
-import TaskList from './pages/TaskList.vue'
-import TaskDetail from './pages/TaskDetail.vue'
-import WorkPage from './pages/WorkPage.vue'
-import SearchPage from './pages/SearchPage.vue'
-import TrashPage from './pages/TrashPage.vue'
-import DocsPage from './pages/DocsPage.vue'
+
+const TaskList = () => import('./pages/TaskList.vue')
+const TaskDetail = () => import('./pages/TaskDetail.vue')
+const WorkPage = () => import('./pages/WorkPage.vue')
+const SearchPage = () => import('./pages/SearchPage.vue')
+const TrashPage = () => import('./pages/TrashPage.vue')
+const DocsPage = () => import('./pages/DocsPage.vue')
 
 const router = createRouter({
   history: createWebHashHistory(),

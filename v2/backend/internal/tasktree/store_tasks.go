@@ -42,13 +42,19 @@ func (a *App) createTask(ctx context.Context, body taskCreate) (jsonMap, error) 
 		if err := a.insertEvent(txCtx, taskID, nil, "task_created", &body.Title, nil, &actor{Tool: body.SourceTool, AgentID: body.CreatedByID}, nil); err != nil {
 			return err
 		}
+		// 创建阶段并建立 key → stage_node_id 映射
+		stageKeyMap := make(map[string]string, len(body.Stages))
 		for _, stage := range body.Stages {
-			if _, err := a.createStage(txCtx, taskID, stage); err != nil {
+			created, err := a.createStage(txCtx, taskID, stage)
+			if err != nil {
 				return err
+			}
+			if stage.Key != nil && *stage.Key != "" {
+				stageKeyMap[*stage.Key] = asString(created["id"])
 			}
 		}
 		for _, seed := range body.Nodes {
-			if _, err := a.createTaskSeedNode(txCtx, taskID, nil, seed); err != nil {
+			if _, err := a.createTaskSeedNode(txCtx, taskID, nil, seed, stageKeyMap); err != nil {
 				return err
 			}
 		}
@@ -61,13 +67,23 @@ func (a *App) createTask(ctx context.Context, body taskCreate) (jsonMap, error) 
 	return out, err
 }
 
-func (a *App) createTaskSeedNode(ctx context.Context, taskID string, parentNodeID *string, seed taskNodeSeed) (jsonMap, error) {
+func (a *App) createTaskSeedNode(ctx context.Context, taskID string, parentNodeID *string, seed taskNodeSeed, stageKeyMap map[string]string) (jsonMap, error) {
 	kind := seed.Kind
-	if kind == "" && len(seed.Children) > 0 {
+	if len(seed.Children) > 0 {
 		kind = "group"
+	} else if kind != "group" && kind != "leaf" {
+		kind = "leaf" // normalize: "task", "", or any other value → "leaf"
+	}
+	// resolve stage_key → stage_node_id
+	var stageNodeID *string
+	if seed.StageKey != nil && *seed.StageKey != "" {
+		if sid, ok := stageKeyMap[*seed.StageKey]; ok {
+			stageNodeID = &sid
+		}
 	}
 	created, err := a.createNode(ctx, taskID, nodeCreate{
 		ParentNodeID:       parentNodeID,
+		StageNodeID:        stageNodeID,
 		NodeKey:            seed.NodeKey,
 		Kind:               kind,
 		Title:              seed.Title,
@@ -91,7 +107,7 @@ func (a *App) createTaskSeedNode(ctx context.Context, taskID string, parentNodeI
 		return nil, fmt.Errorf("seed node created without id")
 	}
 	for _, child := range seed.Children {
-		if _, err := a.createTaskSeedNode(ctx, taskID, &nodeID, child); err != nil {
+		if _, err := a.createTaskSeedNode(ctx, taskID, &nodeID, child, stageKeyMap); err != nil {
 			return nil, err
 		}
 	}
@@ -119,10 +135,15 @@ func (a *App) previewCreateTask(_ context.Context, body taskCreate) (jsonMap, er
 	}
 	nodes := make([]previewNode, 0, len(body.Nodes)+len(body.Stages))
 	keyToNodes := map[string][]previewNode{}
+	type stageInfo struct {
+		id   string
+		path string
+	}
 	stageKey := ""
 	activeStageID := ""
 	activeStageKey := ""
 	activeStagePath := ""
+	stageKeyToInfo := map[string]stageInfo{}
 	for idx, stage := range body.Stages {
 		nk := strings.TrimSpace(strPtrValue(stage.NodeKey))
 		if nk == "" {
@@ -133,6 +154,9 @@ func (a *App) previewCreateTask(_ context.Context, body taskCreate) (jsonMap, er
 		p := previewNode{ID: id, Path: path, Title: stage.Title, NodeKey: nk}
 		nodes = append(nodes, p)
 		keyToNodes[nk] = append(keyToNodes[nk], p)
+		if stage.Key != nil && *stage.Key != "" {
+			stageKeyToInfo[*stage.Key] = stageInfo{id: id, path: path}
+		}
 		if idx == 0 {
 			activeStageID = id
 			activeStageKey = nk
@@ -183,7 +207,13 @@ func (a *App) previewCreateTask(_ context.Context, body taskCreate) (jsonMap, er
 	for _, seed := range body.Nodes {
 		rootParentPath := ""
 		rootParentID := ""
-		if stageKey != "" {
+		// resolve stage_key → specific stage; fallback to active stage
+		if seed.StageKey != nil && *seed.StageKey != "" {
+			if info, ok := stageKeyToInfo[*seed.StageKey]; ok {
+				rootParentPath = info.path
+				rootParentID = info.id
+			}
+		} else if stageKey != "" {
 			rootParentPath = activeStagePath
 			rootParentID = activeStageID
 		}

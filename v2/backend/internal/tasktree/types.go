@@ -27,6 +27,7 @@ type taskNodeSeed struct {
 	NodeKey            *string        `json:"node_key"`
 	Kind               string         `json:"kind"`
 	Title              string         `json:"title"`
+	StageKey           *string        `json:"stage_key"`
 	Instruction        *string        `json:"instruction"`
 	AcceptanceCriteria []string       `json:"acceptance_criteria"`
 	DependsOn          []string       `json:"depends_on"`
@@ -70,6 +71,7 @@ type nodeCreate struct {
 }
 
 type stageCreate struct {
+	Key                *string        `json:"key"`
 	NodeKey            *string        `json:"node_key"`
 	Title              string         `json:"title"`
 	Instruction        *string        `json:"instruction"`
@@ -215,8 +217,8 @@ type memoryFullPatchBody struct {
 	Blockers           []string `json:"blockers"`
 	NextActions        []string `json:"next_actions"`
 	Evidence           []string `json:"evidence"`
-	ExecutionLog       *string  `json:"execution_log"`
-	AppendExecutionLog *string  `json:"append_execution_log"`
+	ExecutionLog       *string  `json:"execution_log"`        // deprecated: ignored, auto-generated from run_logs
+	AppendExecutionLog *string  `json:"append_execution_log"` // deprecated: ignored, auto-generated from run_logs
 	ManualNoteText     *string  `json:"manual_note_text"`
 	ExpectedVersion    *int     `json:"expected_version"`
 }
@@ -246,21 +248,42 @@ type projectUpdate struct {
 }
 
 type nodeListOptions struct {
-	Statuses        []string
-	Kinds           []string
-	Depth           *int
-	MaxDepth        *int
-	UpdatedAfter    string
-	HasChildren     *bool
-	Query           string
-	Limit           int
-	Cursor          string
-	SortBy          string
-	SortOrder       string
-	ViewMode        string
-	FilterMode      string
-	IncludeFullTree bool
-	IncludeHidden   bool
+	Statuses          []string
+	Kinds             []string
+	Depth             *int
+	MaxDepth          *int
+	ParentNodeID      string
+	SubtreeRootNodeID string
+	MaxRelativeDepth  *int
+	UpdatedAfter      string
+	HasChildren       *bool
+	Query             string
+	Limit             int
+	Cursor            string
+	SortBy            string
+	SortOrder         string
+	ViewMode          string
+	FilterMode        string
+	IncludeFullTree   bool
+	IncludeHidden     bool
+}
+
+type nodeContextOptions struct {
+	Preset string
+}
+
+type runListOptions struct {
+	Limit       int
+	Cursor      string
+	ViewMode    string
+	IncludeLogs bool
+}
+
+type artifactListOptions struct {
+	Limit    int
+	Cursor   string
+	ViewMode string
+	Kind     string
 }
 
 type eventListOptions struct {
@@ -273,6 +296,15 @@ type eventListOptions struct {
 	Before      string
 	After       string
 	IncludeDesc bool
+}
+
+type resumeOptions struct {
+	IncludeEvents          bool
+	IncludeRuns            bool
+	IncludeArtifacts       bool
+	IncludeNextNodeContext bool
+	IncludeTaskMemory      bool
+	IncludeStageMemory     bool
 }
 
 type taskContextPatchBody struct {

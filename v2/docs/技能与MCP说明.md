@@ -2,23 +2,21 @@
 
 本文档面向两类用户：
 
-- 使用本地技能文档的人
-- 通过 MCP / DXT 接入本项目的人
+- 使用本地技能文档的 AI 编程助手
+- 通过 MCP / DXT 接入本项目的开发者
 
-## 1. V2 对应的技能文件
+## 1. 连接信息
 
-本项目的技能文件在：
+| 入口 | 地址 |
+|------|------|
+| MCP | `http://127.0.0.1:8880/mcp` |
+| HTTP API | `http://127.0.0.1:8880/v1/...` |
+| 前端页面 | `http://127.0.0.1:8880` |
+| 前端开发 | `http://127.0.0.1:5174/` |
 
-- `./skill/SKILL.md`
+同一个后端 `serve` 进程同时提供 UI、HTTP API 和 MCP。
 
-它描述的是：
-
-- 连接信息与端口约定
-- MCP 工具清单
-- HTTP API 端点
-- 常用工作流
-
-当前技能默认连接：
+MCP 连接配置：
 
 ```json
 {
@@ -30,187 +28,126 @@
 }
 ```
 
-## 2. 本项目的 MCP 地址
+## 2. 技能文件
 
-- `http://127.0.0.1:8880/mcp`
+核心技能文档：`./skill/SKILL.md`
 
-同一个后端还会提供：
+覆盖内容：
 
-- UI：`http://127.0.0.1:8880`
-- HTTP API：`http://127.0.0.1:8880/v1/...`
+- 连接信息与数据模型
+- 工具速查表（含关键参数）
+- 核心工作流与渐进式读取
+- 默认读取规则
+- 行为规则与 Memory 约定
 
-## 3. 当前有哪些 MCP 工具
+详细参考文档（按需读取）：
 
-V2 当前 MCP 主要覆盖五大类。
+| 文件 | 内容 |
+|------|------|
+| `skill/docs/task-tree-tools.md` | 完整 MCP 工具清单 + 场景速查索引 |
+| `skill/docs/task-tree-api.md` | HTTP API 参考 + 请求/响应示例 |
+| `skill/docs/task-tree-best-practices.md` | 最佳实践 + 并发/性能/故障处理 |
+
+## 3. MCP 工具分类
 
 ### 项目
 
-- `task_tree_list_projects`
-- `task_tree_get_project`
-- `task_tree_create_project`
-- `task_tree_update_project`
-- `task_tree_delete_project`
-- `task_tree_project_overview`
+`task_tree_list_projects`、`task_tree_get_project`、`task_tree_create_project`、`task_tree_update_project`、`task_tree_delete_project`、`task_tree_project_overview`
 
 ### 任务
 
-- `task_tree_list_tasks`
-- `task_tree_get_task`
-- `task_tree_create_task`（支持 `dry_run` 预演）
-- `task_tree_update_task`
-- `task_tree_delete_task`
-- `task_tree_restore_task`
-- `task_tree_hard_delete_task`
-- `task_tree_empty_trash`
-- `task_tree_transition_task`
+`task_tree_list_tasks`、`task_tree_get_task`、`task_tree_create_task`（支持 `dry_run`）、`task_tree_update_task`、`task_tree_delete_task`、`task_tree_restore_task`、`task_tree_hard_delete_task`、`task_tree_empty_trash`、`task_tree_transition_task`
+
+### 恢复 / 导航 / 收尾
+
+`task_tree_resume`、`task_tree_next_node`、`task_tree_get_remaining`、`task_tree_get_task_context`、`task_tree_patch_task_context`、`task_tree_wrapup`、`task_tree_get_wrapup`
 
 ### 阶段与节点
 
-- `task_tree_create_node`（支持 `depends_on_keys`）
-- `task_tree_batch_create_nodes`（事务原子）
-- `task_tree_list_nodes`
-- `task_tree_list_nodes_summary`
-- `task_tree_focus_nodes`
-- `task_tree_get_node`
-- `task_tree_update_node`（支持 `depends_on_keys`）
-- `task_tree_reorder_nodes`
-- `task_tree_move_node`
-- `task_tree_progress`
-- `task_tree_complete`（支持 `result_payload`，checkpoint 可强校验）
-- `task_tree_block_node`
-- `task_tree_claim`
-- `task_tree_release`
-- `task_tree_retype_node`
-- `task_tree_transition_node`
-
-### 阶段
-
-- `task_tree_list_stages`
-- `task_tree_create_stage`
-- `task_tree_batch_create_stages`
-- `task_tree_activate_stage`
-
-### Run 与上下文
-
-- `task_tree_start_run`
-- `task_tree_finish_run`
-- `task_tree_get_run`
-- `task_tree_list_node_runs`
-- `task_tree_append_run_log`
-- `task_tree_get_node_context`
-
-### 上下文与搜索
-
-- `task_tree_resume`
-- `task_tree_next_node`
-- `task_tree_get_remaining`
-- `task_tree_get_resume_context`
-- `task_tree_list_events`
-- `task_tree_search`
-- `task_tree_smart_search`
-- `task_tree_work_items`
-- `task_tree_sweep_leases`
-- `task_tree_tree_view`
-- `task_tree_import_plan`
-- `task_tree_get_task_context`
-- `task_tree_patch_task_context`
-- `task_tree_patch_node_memory`
-- `task_tree_rebuild_index`
-
-### 收尾与总结
-
-- `task_tree_wrapup`（写入任务收尾总结）
-- `task_tree_get_wrapup`（读取任务收尾总结）
+`task_tree_list_stages`、`task_tree_create_stage`、`task_tree_batch_create_stages`、`task_tree_activate_stage`、`task_tree_create_node`、`task_tree_batch_create_nodes`、`task_tree_list_nodes`、`task_tree_list_nodes_summary`、`task_tree_focus_nodes`、`task_tree_get_node`、`task_tree_get_node_context`、`task_tree_update_node`、`task_tree_reorder_nodes`、`task_tree_move_node`、`task_tree_retype_node`
 
 ### 节点执行
 
-- `task_tree_claim_and_start_run`（领取 + 开始运行，2→1 合并）
+`task_tree_claim_and_start_run`、`task_tree_claim`、`task_tree_release`、`task_tree_progress`、`task_tree_complete`、`task_tree_transition_node`、`task_tree_block_node`、`task_tree_patch_node_memory`、`task_tree_get_resume_context`
 
-### 产物
+### Run / Event / Artifact / Search
 
-- `task_tree_list_artifacts`
-- `task_tree_create_artifact`
-- `task_tree_upload_artifact`
+`task_tree_start_run`、`task_tree_finish_run`、`task_tree_get_run`、`task_tree_list_node_runs`、`task_tree_append_run_log`、`task_tree_list_events`、`task_tree_list_artifacts`、`task_tree_create_artifact`、`task_tree_upload_artifact`、`task_tree_smart_search`、`task_tree_search`、`task_tree_work_items`、`task_tree_tree_view`、`task_tree_import_plan`、`task_tree_sweep_leases`、`task_tree_rebuild_index`
 
-完整开放清单见：
+完整清单与参数说明见 [skill/docs/task-tree-tools.md](../skill/docs/task-tree-tools.md)。
 
-- [backend/docs/mcp-open-manifest.txt](../backend/docs/mcp-open-manifest.txt)
+短别名：`task_tree.batch_create_nodes`、`task_tree.activate_stage`、`task_tree.list_nodes_summary`
 
-短别名（与旧名并存）：
+## 4. 默认读取规则
 
-- `task_tree.batch_create_nodes`
-- `task_tree.activate_stage`
-- `task_tree.list_nodes_summary`
+所有读接口默认返回轻量数据：
 
-### 3.1 MCP 返回优化（与 HTTP 的差异）
+| 接口 | 默认行为 | 需显式请求 |
+|------|---------|-----------|
+| `resume` | 轻量包 | `include=events,runs,artifacts,next_node_context,task_memory,stage_memory` |
+| `get_task` | 不带树 | `include_tree=true` |
+| `list_nodes` | `view_mode=summary` | `view_mode=detail` |
+| `get_node_context` | 建议 `preset=summary` | `preset=memory/work/full` |
+| `get_run` | 不带日志 | `include_logs=true` |
+| `list_node_runs` | `summary + cursor` | `view_mode=detail` |
+| `list_artifacts` | `summary + cursor` | `view_mode=detail` |
 
-MCP 工具层对返回数据做了裁剪，减少 AI token 消耗：
+### 推荐读取顺序
 
-| 差异点 | 说明 |
-|--------|------|
-| **list_nodes 默认 summary** | MCP 默认 `view_mode=summary`（13 字段），HTTP 无参数返回全量 |
-| **list_tasks 裁剪** | MCP 去掉 wrapup_summary/goal/metadata 等，保留 12 字段 |
-| **list_stages 裁剪** | MCP 返回 10 字段 + `{items:[...]}` 格式 |
-| **list_events 默认 limit=20** | MCP 默认 20 条，HTTP 默认 100 条 |
-| **work_items 裁剪** | MCP 返回 10 字段 + `{items:[...]}` 格式 |
-| **resume 裁剪** | task 只保留核心字段，task_memory 只保留 summary/decisions/risks/next_actions |
-| **omitEmpty** | MCP 输出自动移除 null 值和空 map 字段 |
-| **数组参数兼容** | kind/status/type 等过滤参数支持字符串 `"leaf"` 和数组 `["leaf"]` 两种写法 |
+```
+task_tree_resume
+→ task_tree_focus_nodes 或 task_tree_list_nodes_summary
+→ task_tree_get_node_context(preset=summary)
+→ 按需补充：preset=memory / work，list_node_runs，get_run(include_logs=true)
+```
 
-## 4. 当前哪些能力不是 MCP 工具
+## 5. HTTP only 能力
 
-下面这些能力在 V2 已经存在，但当前仅通过 HTTP 提供，**没有**对应 MCP 工具：
+以下能力当前没有对应的 MCP 工具：
 
-- Stage/Task 的 memory 原生 patch（manual_note/full patch）—— `PATCH /v1/stages/{id}/memory`、`PATCH /v1/tasks/{id}/memory`
-- 节点 memory 手动快照 —— `POST /v1/nodes/{id}/memory/snapshot`
-- 部分 overview/read model 增强字段
+- Task Memory 原生 PATCH / snapshot（`GET/PATCH /v1/tasks/{id}/memory`，`POST .../snapshot`）
+- Stage Memory 原生 PATCH / snapshot（`GET/PATCH /v1/stages/{id}/memory`，`POST .../snapshot`）
+- Node Memory snapshot（`POST /v1/nodes/{id}/memory/snapshot`）
 
-**已有 MCP 工具的能力**（不再需要 HTTP）：
+已有 MCP 的相关能力：
 
-- 节点 Memory 结构化写入：`task_tree_patch_node_memory`
-- Run 创建、日志、结束：`task_tree_start_run` / `task_tree_append_run_log` / `task_tree_finish_run`
+- 节点 Memory 结构化 patch：`task_tree_patch_node_memory`
 - 任务上下文快照读写：`task_tree_get_task_context` / `task_tree_patch_task_context`
-- 收尾总结：`task_tree_wrapup` / `task_tree_get_wrapup`
 
-## 4.1 Memory 的推荐使用方式
+## 6. 行为规则（核心）
 
-V2 里的 Memory 不应该只被当成“人工备注框”。
+1. **执行优先**：节点有动词就执行，不要用报告替代
+2. **执行前 Claim**：先 `claim_and_start_run` 再执行
+3. **完成用 Complete**：`progress(1.0)` 不等于完成
+4. **先搜索再开始**：新工作前优先 `smart_search`
+5. **渐进式读取**：先 resume → focus → summary → 按需下钻
 
-推荐约定是：
+## 7. DXT
 
-- `manual_note_text`：人工填写
-- `summary / decisions / risks / next_actions`：AI 或系统主动生成
+DXT 目录：`./task-tree-dxt/`
 
-因此，技能用户在使用 V2 时，应该默认让 AI 在这些时机尝试刷新 Memory：
+- `proxy.mjs`：stdio JSON-RPC → `http://127.0.0.1:8880/mcp` 转发
+- `task-tree.dxt`：打包后的安装文件
 
-1. 节点完成后，刷新节点 Memory
-2. 阶段切换或阶段完成度明显变化后，刷新阶段 Memory
-3. 任务收尾、任务方向变化或形成关键结论后，刷新任务 Memory
+## 8. Streamable HTTP MCP
 
-当前这条工作流已经加入 V2 技能文档，即使现在部分能力仍通过 HTTP 调用，推荐行为也已经明确下来。
+`/mcp` 支持：
 
-## 5. DXT 对应关系
+- `POST /mcp`、`GET /mcp`、`DELETE /mcp`
+- `Mcp-Session-Id` 会话管理
+- SSE 推送 / 回放 / 恢复流
+- 仅接受回环来源
 
-本项目的 DXT 在：
+## 9. 文档同步约定
 
-- `./task-tree-dxt`
+修改 MCP 工具、默认规则、技能工作流或能力边界后，同步更新：
 
-其中：
+- `./skill/SKILL.md` + `./skill/docs/` 下的文档
+- `./docs/技能与MCP说明.md`（本文件）
+- `./backend/docs/http-mcp-parity.md`
+- `./backend/docs/mcp-open-manifest.txt`
 
-- `proxy.mjs` 负责把 stdio JSON-RPC 转发到 `http://127.0.0.1:8880/mcp`
-- `task-tree.dxt` 是打包后的安装文件
+并同步到全局目录：
 
-## 6. 文档同步约定
-
-如果你改动了技能、MCP 地址、端口、能力边界或导航入口，请同步更新这份文档和项目说明页，保证说明文件始终和最新状态一致。
-
-并且同步规则不只针对 `SKILL.md`：`skill/docs/` 下文档也要一起同步到全局目录。
-
-- 本地源：
-  - `./skill/SKILL.md`
-  - `./skill/docs/task-tree-api.md`
-  - `./skill/docs/task-tree-best-practices.md`
-  - `./skill/docs/task-tree-tools.md`
-- 全局目标：
-  - `C:\Users\Administrator\.claude\skills\task-tree\`
-  - `C:\Users\Administrator\.codex\skills\task-tree\`
+- `C:\Users\Administrator\.claude\skills\task-tree\`
+- `C:\Users\Administrator\.codex\skills\task-tree\`

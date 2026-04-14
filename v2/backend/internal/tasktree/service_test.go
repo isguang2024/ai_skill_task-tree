@@ -41,7 +41,8 @@ func TestSmokeFlow(t *testing.T) {
 	if !strings.Contains(stringValue(n22111["path"]), "A/2/2/1/1/1") {
 		t.Fatalf("deep node path = %v", n22111["path"])
 	}
-	allNodes := getJSON[[]map[string]any](t, server.URL+"/v1/tasks/"+tid+"/nodes")
+	allNodesWrap := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid+"/nodes")
+	allNodes, _ := allNodesWrap["items"].([]any)
 	if len(allNodes) < 7 {
 		t.Fatalf("list nodes len = %d", len(allNodes))
 	}
@@ -94,7 +95,8 @@ func TestSmokeFlow(t *testing.T) {
 	if stringValue(art["id"]) == "" {
 		t.Fatal("artifact missing id")
 	}
-	arts := getJSON[[]map[string]any](t, server.URL+"/v1/tasks/"+tidc+"/artifacts")
+	artsWrap := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+tidc+"/artifacts")
+	arts, _ := artsWrap["items"].([]any)
 	if len(arts) != 1 {
 		t.Fatalf("artifacts len = %d", len(arts))
 	}
@@ -206,13 +208,12 @@ func TestSmokeFlow(t *testing.T) {
 
 	tid4o := stringValue(postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "resume 顺序", "task_key": "O"})["id"])
 	orderParent := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4o+"/nodes", map[string]any{"title": "第一组", "node_key": "1"})
-	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4o+"/nodes", map[string]any{"parent_node_id": orderParent["id"], "title": "第一叶子", "node_key": "1"})
+	firstOrderedLeaf := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4o+"/nodes", map[string]any{"parent_node_id": orderParent["id"], "title": "第一叶子", "node_key": "1"})
 	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4o+"/nodes", map[string]any{"title": "较晚创建的根节点", "node_key": "3"})
 	resumeOrdered := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4o+"/resume")
-	nextWrap, _ := resumeOrdered["next_node"].(map[string]any)
-	nextOrdered, _ := nextWrap["node"].(map[string]any)
-	if stringValue(nextOrdered["path"]) != "O/1/1" {
-		t.Fatalf("resume ordered next path = %v", nextOrdered["path"])
+	recommendedOrdered, _ := resumeOrdered["recommended_action"].(map[string]any)
+	if stringValue(recommendedOrdered["node_id"]) != stringValue(firstOrderedLeaf["id"]) {
+		t.Fatalf("resume ordered action should point to earliest leaf: %#v", resumeOrdered["recommended_action"])
 	}
 	remainingOrdered := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4o+"/remaining")
 	nextReady, _ := remainingOrdered["next_ready_nodes"].([]any)
@@ -243,13 +244,15 @@ func TestSmokeFlow(t *testing.T) {
 		t.Fatalf("task status after split = %v", taskAfterSplit["status"])
 	}
 	resumeAfterSplit := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4b+"/resume")
-	if resumeAfterSplit["next_node"] == nil {
-		t.Fatal("resume after split missing next node")
+	recommendedAfterSplit, _ := resumeAfterSplit["recommended_action"].(map[string]any)
+	if stringValue(recommendedAfterSplit["node_id"]) == "" {
+		t.Fatal("resume after split missing recommended next node")
 	}
 	if !strings.Contains(stringValue(childAfterDone["path"]), "RB/1/2") {
 		t.Fatalf("child path after split = %v", childAfterDone["path"])
 	}
-	splitNodes := getJSON[[]map[string]any](t, server.URL+"/v1/tasks/"+tid4b+"/nodes")
+	splitNodesWrap := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid4b+"/nodes")
+	splitNodes := workspaceAsItems(splitNodesWrap["items"])
 	foundCarry := false
 	for _, node := range splitNodes {
 		if strings.Contains(stringValue(node["path"]), "RB/1/1") && strings.Contains(stringValue(node["title"]), "原任务") {
@@ -682,7 +685,8 @@ func TestCreateTaskWithInitialNodeTree(t *testing.T) {
 		},
 	})
 	tid := stringValue(task["id"])
-	nodes := getJSON[[]map[string]any](t, server.URL+"/v1/tasks/"+tid+"/nodes")
+	nodesWrap := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid+"/nodes")
+	nodes := workspaceAsItems(nodesWrap["items"])
 	if len(nodes) != 5 {
 		t.Fatalf("seed nodes len = %d", len(nodes))
 	}
@@ -926,7 +930,7 @@ func TestRunRoutesAndSyntheticCompatibility(t *testing.T) {
 		t.Fatalf("http run log seq = %v", logItem["seq"])
 	}
 
-	runFetched := getJSON[map[string]any](t, server.URL+"/v1/runs/"+stringValue(run["id"]))
+	runFetched := getJSON[map[string]any](t, server.URL+"/v1/runs/"+stringValue(run["id"])+"?include_logs=true")
 	logs, _ := runFetched["logs"].([]any)
 	if len(logs) != 1 {
 		t.Fatalf("http fetched run logs len = %d", len(logs))
@@ -941,7 +945,8 @@ func TestRunRoutesAndSyntheticCompatibility(t *testing.T) {
 		t.Fatalf("http finished result = %v", finished["result"])
 	}
 
-	runs := getJSON[[]map[string]any](t, server.URL+"/v1/nodes/"+stringValue(node["id"])+"/runs")
+	runsWrap := getJSON[map[string]any](t, server.URL+"/v1/nodes/"+stringValue(node["id"])+"/runs")
+	runs := workspaceAsItems(runsWrap["items"])
 	if len(runs) != 1 {
 		t.Fatalf("http node runs len = %d", len(runs))
 	}
@@ -955,11 +960,12 @@ func TestRunRoutesAndSyntheticCompatibility(t *testing.T) {
 	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+stringValue(task2["id"])+"/nodes/"+stringValue(node2["id"])+"/complete", map[string]any{
 		"message": "旧 complete 接口完成节点",
 	})
-	syntheticRuns := getJSON[[]map[string]any](t, server.URL+"/v1/nodes/"+stringValue(node2["id"])+"/runs")
+	syntheticRunsWrap := getJSON[map[string]any](t, server.URL+"/v1/nodes/"+stringValue(node2["id"])+"/runs")
+	syntheticRuns := workspaceAsItems(syntheticRunsWrap["items"])
 	if len(syntheticRuns) == 0 {
 		t.Fatal("expected synthetic run for legacy node APIs")
 	}
-	syntheticRun := getJSON[map[string]any](t, server.URL+"/v1/runs/"+stringValue(syntheticRuns[0]["id"]))
+	syntheticRun := getJSON[map[string]any](t, server.URL+"/v1/runs/"+stringValue(syntheticRuns[0]["id"])+"?include_logs=true")
 	if stringValue(syntheticRun["result"]) != "done" {
 		t.Fatalf("synthetic run result = %v", syntheticRun["result"])
 	}
@@ -1063,12 +1069,15 @@ func TestMemoryAndReadModelFlow(t *testing.T) {
 		t.Fatalf("node context missing artifacts: %#v", contextNode)
 	}
 
-	resume := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/resume?debug=1")
-	if resume["task_memory"] == nil {
-		t.Fatalf("resume missing task_memory: %#v", resume)
+	resume := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/resume?debug=1&include=runs")
+	if resume["task_memory"] != nil {
+		t.Fatalf("resume should not include task_memory by default: %#v", resume)
 	}
-	if resume["current_stage_memory"] == nil {
-		t.Fatalf("resume missing current_stage_memory: %#v", resume)
+	if resume["task_memory_summary"] == nil {
+		t.Fatalf("resume missing task_memory_summary: %#v", resume)
+	}
+	if resume["current_stage_memory"] != nil {
+		t.Fatalf("resume should not include current_stage_memory by default: %#v", resume)
 	}
 	debug, _ := resume["debug"].(map[string]any)
 	if debug == nil || debug["focus_nodes_count"] == nil {
@@ -1088,8 +1097,18 @@ func TestMemoryAndReadModelFlow(t *testing.T) {
 	if firstTask["memory"] == nil {
 		t.Fatalf("overview task missing memory: %#v", firstTask)
 	}
+	mem, _ := firstTask["memory"].(map[string]any)
+	if mem == nil || mem["summary"] == nil {
+		t.Fatalf("overview task memory should expose summary alias: %#v", firstTask)
+	}
 	if firstTask["current_stage"] == nil {
 		t.Fatalf("overview task missing current_stage: %#v", firstTask)
+	}
+	if firstTask["goal"] != nil {
+		t.Fatalf("overview task should stay summary-only: %#v", firstTask)
+	}
+	if firstTask["remaining"] == nil {
+		t.Fatalf("overview task should expose remaining summary: %#v", firstTask)
 	}
 }
 
@@ -1184,7 +1203,8 @@ func TestDryRunAndBatchAtomicDependsOnKeys(t *testing.T) {
 	if !strings.Contains(string(raw), "depends_on_keys") {
 		t.Fatalf("unexpected batch failure body: %s", string(raw))
 	}
-	nodes := getJSON[[]map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes")
+	nodesWrap := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes")
+	nodes := workspaceAsItems(nodesWrap["items"])
 	if len(nodes) != 0 {
 		t.Fatalf("batch should rollback on failure, got %d nodes", len(nodes))
 	}
@@ -1247,7 +1267,8 @@ func TestCheckpointCompletionAndLatestResultPayload(t *testing.T) {
 	if len(verified) != 1 || stringValue(verified[0]) != "go build ./..." {
 		t.Fatalf("unexpected latest commands_verified: %#v", latest["commands_verified"])
 	}
-	runs := getJSON[[]map[string]any](t, server.URL+"/v1/nodes/"+nodeID+"/runs")
+	runsWrap := getJSON[map[string]any](t, server.URL+"/v1/nodes/"+nodeID+"/runs")
+	runs := workspaceAsItems(runsWrap["items"])
 	if len(runs) == 0 {
 		t.Fatal("expected node runs")
 	}
@@ -1321,6 +1342,401 @@ func TestParallelGroupAlternativesAndStageSuggestions(t *testing.T) {
 	}
 }
 
+func TestDependsOnSummaryAndExecutionOrder(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "depends-summary.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "依赖摘要", "task_key": "DEP"})
+	taskID := stringValue(task["id"])
+	first := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "先完成", "node_key": "1"})
+	second := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{
+		"title":      "后执行",
+		"node_key":   "2",
+		"depends_on": []string{stringValue(first["id"])},
+	})
+
+	summary := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes?view_mode=summary&sort_by=path&limit=10")
+	items, _ := summary["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("unexpected summary len: %#v", summary)
+	}
+	secondSummary, _ := items[1].(map[string]any)
+	dependsOn, _ := secondSummary["depends_on"].([]any)
+	if len(dependsOn) != 1 || stringValue(dependsOn[0]) != stringValue(first["id"]) {
+		t.Fatalf("summary depends_on mismatch: %#v", secondSummary)
+	}
+	if secondSummary["depends_on_count"] != float64(1) {
+		t.Fatalf("summary depends_on_count mismatch: %#v", secondSummary)
+	}
+
+	resumeBefore := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/resume")
+	recommendedBefore, _ := resumeBefore["recommended_action"].(map[string]any)
+	if stringValue(recommendedBefore["node_id"]) != stringValue(first["id"]) {
+		t.Fatalf("dependency should keep prerequisite first: %#v", resumeBefore["recommended_action"])
+	}
+
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+stringValue(first["id"])+"/complete", map[string]any{"message": "done"})
+	resumeAfter := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/resume")
+	recommendedAfter, _ := resumeAfter["recommended_action"].(map[string]any)
+	if stringValue(recommendedAfter["node_id"]) != stringValue(second["id"]) {
+		t.Fatalf("dependent node should become next after prerequisite done: %#v", resumeAfter["recommended_action"])
+	}
+}
+
+func TestFocusFilterAppliesBeforePagination(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "focus-before-limit.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "focus limit", "task_key": "FCS"})
+	taskID := stringValue(task["id"])
+	doneA := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "A", "node_key": "1"})
+	doneB := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "B", "node_key": "2"})
+	readyC := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "C", "node_key": "3"})
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+stringValue(doneA["id"])+"/complete", map[string]any{"message": "done"})
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+stringValue(doneB["id"])+"/complete", map[string]any{"message": "done"})
+
+	summary := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes?view_mode=summary&filter_mode=focus&sort_by=path&limit=1")
+	items, _ := summary["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("focus summary should keep ready node even when it is beyond the raw first page: %#v", summary)
+	}
+	firstItem, _ := items[0].(map[string]any)
+	if stringValue(firstItem["id"]) != stringValue(readyC["id"]) {
+		t.Fatalf("focus summary should page over focused rows, got %#v", firstItem)
+	}
+}
+
+func TestResumeHonorsTreePagingAndResumeContextSiblings(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "resume-paging.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "resume 分页", "task_key": "RSM"})
+	taskID := stringValue(task["id"])
+	parent := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "父节点", "node_key": "1", "kind": "group"})
+	childA := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "子节点A", "parent_node_id": parent["id"], "node_key": "1"})
+	childB := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "子节点B", "parent_node_id": parent["id"], "node_key": "2"})
+	childC := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "子节点C", "parent_node_id": parent["id"], "node_key": "3"})
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "根节点Z", "node_key": "9"})
+
+	resume := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/resume?sort_by=path&sort_order=desc&limit=1")
+	tree, _ := resume["tree"].([]any)
+	if len(tree) != 1 {
+		t.Fatalf("resume tree should honor limit: %#v", resume)
+	}
+	if resume["tree_cursor"] == nil {
+		t.Fatalf("resume tree should expose cursor when paged: %#v", resume)
+	}
+
+	ctx := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+stringValue(childB["id"])+"/resume-context")
+	siblings, _ := ctx["siblings"].([]any)
+	if len(siblings) != 2 {
+		t.Fatalf("resume context should only include same-parent siblings: %#v", ctx)
+	}
+	ids := map[string]struct{}{}
+	for _, raw := range siblings {
+		item, _ := raw.(map[string]any)
+		ids[stringValue(item["node_id"])] = struct{}{}
+	}
+	if _, ok := ids[stringValue(childA["id"])]; !ok {
+		t.Fatalf("missing sibling A: %#v", siblings)
+	}
+	if _, ok := ids[stringValue(childC["id"])]; !ok {
+		t.Fatalf("missing sibling C: %#v", siblings)
+	}
+
+	childrenResume := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/resume?view_mode=summary&parent_node_id="+url.QueryEscape(stringValue(parent["id"])))
+	childItems := workspaceAsItems(childrenResume["tree"])
+	if len(childItems) != 3 {
+		t.Fatalf("resume should honor parent_node_id filtering: %#v", childrenResume)
+	}
+}
+
+func TestNodesDefaultSummaryAndSubtreeFilters(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "nodes-summary-subtree.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "子树过滤", "task_key": "TREE2"})
+	taskID := stringValue(task["id"])
+	group := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "分组", "node_key": "1", "kind": "group"})
+	child := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "子节点", "parent_node_id": group["id"], "node_key": "1"})
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "孙节点", "parent_node_id": child["id"], "node_key": "1"})
+
+	defaultList := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes")
+	items := workspaceAsItems(defaultList["items"])
+	if len(items) == 0 || items[0]["next_action"] == nil {
+		t.Fatalf("default nodes should return summary wrapper: %#v", defaultList)
+	}
+
+	children := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes?view_mode=summary&parent_node_id="+url.QueryEscape(stringValue(group["id"])))
+	childItems := workspaceAsItems(children["items"])
+	if len(childItems) != 1 || stringValue(childItems[0]["id"]) != stringValue(child["id"]) {
+		t.Fatalf("parent_node_id filter mismatch: %#v", children)
+	}
+
+	subtree := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes?view_mode=summary&subtree_root_node_id="+url.QueryEscape(stringValue(group["id"]))+"&max_relative_depth=1&sort_by=path")
+	subtreeItems := workspaceAsItems(subtree["items"])
+	if len(subtreeItems) != 2 {
+		t.Fatalf("subtree summary should include root + direct child only: %#v", subtree)
+	}
+}
+
+func TestResumeIncludesOptInHeavySections(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "resume-includes.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "resume include", "task_key": "RIN"})
+	taskID := stringValue(task["id"])
+	stage := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/stages", map[string]any{"title": "阶段一", "node_key": "S1", "activate": true})
+	node := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "执行节点", "node_key": "1"})
+	run := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+stringValue(node["id"])+"/runs", map[string]any{
+		"actor": map[string]any{"tool": "test"},
+	})
+	postJSON[map[string]any](t, server.URL+"/v1/runs/"+stringValue(run["id"])+"/logs", map[string]any{"kind": "stdout", "content": "hello"})
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/artifacts", map[string]any{"node_id": node["id"], "kind": "link", "title": "文档", "uri": "https://example.com"})
+
+	lightResume := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/resume")
+	if len(workspaceAsItems(lightResume["recent_events"])) != 0 {
+		t.Fatalf("resume should omit events by default: %#v", lightResume)
+	}
+	if len(workspaceAsItems(lightResume["recent_runs"])) != 0 {
+		t.Fatalf("resume should omit runs by default: %#v", lightResume)
+	}
+	if len(workspaceAsItems(lightResume["artifacts"])) != 0 {
+		t.Fatalf("resume should omit artifacts by default: %#v", lightResume)
+	}
+	if lightResume["next_node"] != nil {
+		t.Fatalf("resume should omit next node context by default: %#v", lightResume)
+	}
+	if lightResume["task_memory"] != nil || lightResume["current_stage_memory"] != nil {
+		t.Fatalf("resume should omit heavy memory objects by default: %#v", lightResume)
+	}
+	if lightResume["task_memory_summary"] == nil {
+		t.Fatalf("resume should keep task memory summary by default: %#v", lightResume)
+	}
+	if lightResume["next_node_summary"] == nil {
+		t.Fatalf("resume should keep next_node_summary by default: %#v", lightResume)
+	}
+
+	fullResume := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/resume?include=events,runs,artifacts,next_node_context,task_memory,stage_memory")
+	if len(workspaceAsItems(fullResume["recent_events"])) == 0 {
+		t.Fatalf("resume include should return events: %#v", fullResume)
+	}
+	if len(workspaceAsItems(fullResume["recent_runs"])) == 0 {
+		t.Fatalf("resume include should return runs: %#v", fullResume)
+	}
+	if len(workspaceAsItems(fullResume["artifacts"])) != 1 {
+		t.Fatalf("resume include should return artifacts: %#v", fullResume)
+	}
+	if fullResume["next_node"] == nil {
+		t.Fatalf("resume include should return next node context: %#v", fullResume)
+	}
+	if fullResume["task_memory"] == nil {
+		t.Fatalf("resume include should return task_memory: %#v", fullResume)
+	}
+	if fullResume["current_stage_memory"] == nil {
+		t.Fatalf("resume include should return current_stage_memory: %#v", fullResume)
+	}
+	if stringValue(stage["id"]) == "" {
+		t.Fatalf("stage missing id: %#v", stage)
+	}
+}
+
+func TestNodeContextPresetRunAndArtifactSummary(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "context-preset-run-artifact.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "上下文预设", "task_key": "CTX"})
+	taskID := stringValue(task["id"])
+	node := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes", map[string]any{"title": "执行节点", "node_key": "1"})
+	runWrap := postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/nodes/"+stringValue(node["id"])+"/claim-and-start-run", map[string]any{
+		"actor": map[string]any{"tool": "test", "agent_id": "worker"},
+	})
+	run, _ := runWrap["run"].(map[string]any)
+	if run == nil {
+		t.Fatalf("claim-and-start-run should return nested run: %#v", runWrap)
+	}
+	postJSON[map[string]any](t, server.URL+"/v1/runs/"+stringValue(run["id"])+"/logs", map[string]any{"kind": "stdout", "content": "hello"})
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/artifacts", map[string]any{"node_id": node["id"], "kind": "link", "title": "文档", "uri": "https://example.com"})
+
+	summaryCtx := getJSON[map[string]any](t, server.URL+"/v1/nodes/"+stringValue(node["id"])+"/context?preset=summary")
+	if summaryCtx["memory"] != nil || summaryCtx["recent_runs"] != nil {
+		t.Fatalf("summary preset should stay light: %#v", summaryCtx)
+	}
+	workCtx := getJSON[map[string]any](t, server.URL+"/v1/nodes/"+stringValue(node["id"])+"/context?preset=work")
+	if workCtx["memory"] == nil || workCtx["recent_runs"] == nil || workCtx["artifacts"] == nil {
+		t.Fatalf("work preset should include execution context: %#v", workCtx)
+	}
+
+	runSummary := getJSON[map[string]any](t, server.URL+"/v1/nodes/"+stringValue(node["id"])+"/runs?view_mode=summary&limit=1")
+	runItems := workspaceAsItems(runSummary["items"])
+	if len(runItems) != 1 || runItems[0]["logs"] != nil {
+		t.Fatalf("summary runs should paginate without logs: %#v", runSummary)
+	}
+	runNoLogs := getJSON[map[string]any](t, server.URL+"/v1/runs/"+stringValue(run["run_id"]))
+	if runNoLogs["logs"] != nil {
+		t.Fatalf("get run default should omit logs: %#v", runNoLogs)
+	}
+	runWithLogs := getJSON[map[string]any](t, server.URL+"/v1/runs/"+stringValue(run["run_id"])+"?include_logs=true")
+	if runWithLogs["logs"] == nil {
+		t.Fatalf("get run with include_logs should include logs: %#v", runWithLogs)
+	}
+
+	artifacts := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+taskID+"/artifacts?view_mode=summary&limit=10")
+	artifactItems := workspaceAsItems(artifacts["items"])
+	if len(artifactItems) != 1 {
+		t.Fatalf("artifact summary route mismatch: %#v", artifacts)
+	}
+}
+
+func TestProjectsSummaryWithStats(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "project-summary-stats.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+	server := httptest.NewServer(app.mux)
+	defer server.Close()
+
+	project := postJSON[map[string]any](t, server.URL+"/v1/projects", map[string]any{"name": "项目汇总"})
+	projectID := stringValue(project["id"])
+	task := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "任务A", "project_id": projectID})
+	postJSON[map[string]any](t, server.URL+"/v1/tasks/"+stringValue(task["id"])+"/nodes", map[string]any{"title": "节点1"})
+
+	projects := getJSON[[]map[string]any](t, server.URL+"/v1/projects?view_mode=summary_with_stats")
+	found := false
+	for _, item := range projects {
+		if stringValue(item["id"]) == projectID {
+			found = item["_summary"] != nil
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("projects summary_with_stats should include _summary: %#v", projects)
+	}
+}
+
+func TestMCPChildrenAndSubtreeSummaryTools(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "mcp-children-subtree.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+
+	task, err := app.createTask(context.Background(), taskCreate{Title: "MCP 子树", TaskKey: nullableOptString("MCP")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := stringValue(task["id"])
+	parent, err := app.createNode(context.Background(), taskID, nodeCreate{Title: "父节点", NodeKey: nullableOptString("1"), Kind: "group"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := app.createNode(context.Background(), taskID, nodeCreate{Title: "子节点", ParentNodeID: nullableOptString(stringValue(parent["id"])), NodeKey: nullableOptString("1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.createNode(context.Background(), taskID, nodeCreate{Title: "孙节点", ParentNodeID: nullableOptString(stringValue(child["id"])), NodeKey: nullableOptString("1")}); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &mcpServer{app: app}
+	childrenWrap := callMCPToolJSON(t, s, "task_tree_list_children", map[string]any{
+		"task_id": taskID,
+		"node_id": stringValue(parent["id"]),
+		"limit":   10,
+	})
+	childItems := workspaceAsItems(childrenWrap["items"])
+	if len(childItems) != 1 || stringValue(childItems[0]["id"]) != stringValue(child["id"]) {
+		t.Fatalf("mcp children summary mismatch: %#v", childrenWrap)
+	}
+
+	subtreeWrap := callMCPToolJSON(t, s, "task_tree_list_subtree_summary", map[string]any{
+		"task_id":            taskID,
+		"root_node_id":       stringValue(parent["id"]),
+		"max_relative_depth": 1,
+		"limit":              10,
+	})
+	subtreeItems := workspaceAsItems(subtreeWrap["items"])
+	if len(subtreeItems) != 2 {
+		t.Fatalf("mcp subtree summary should include root + direct child only: %#v", subtreeWrap)
+	}
+}
+
+func TestAIToolGetTaskRequiresExplicitTree(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "ai-get-task-summary.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+
+	task, err := app.createTask(context.Background(), taskCreate{Title: "AI 摘要", TaskKey: nullableOptString("AIT")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := stringValue(task["id"])
+	if _, err := app.createNode(context.Background(), taskID, nodeCreate{Title: "节点一", NodeKey: nullableOptString("1")}); err != nil {
+		t.Fatal(err)
+	}
+
+	light := app.executeAITool(context.Background(), "get_task", json.RawMessage(`{"task_id":"`+taskID+`"}`))
+	if !strings.Contains(light, "节点树：未加载") {
+		t.Fatalf("get_task should stay summary-first by default: %s", light)
+	}
+
+	full := app.executeAITool(context.Background(), "get_task", json.RawMessage(`{"task_id":"`+taskID+`","include_tree":true}`))
+	if strings.Contains(full, "节点树：未加载") || !strings.Contains(full, "AIT/1") {
+		t.Fatalf("get_task include_tree should load tree summary: %s", full)
+	}
+}
+
 func postJSON[T any](t *testing.T, u string, body map[string]any) T {
 	t.Helper()
 	data, _ := json.Marshal(body)
@@ -1336,6 +1752,31 @@ func postJSON[T any](t *testing.T, u string, body map[string]any) T {
 	var out T
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatal(err)
+	}
+	return out
+}
+
+func callMCPToolJSON(t *testing.T, server *mcpServer, name string, args map[string]any) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"name":      name,
+		"arguments": args,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := server.callTool(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, _ := result["content"].([]map[string]any)
+	if len(content) == 0 {
+		t.Fatalf("mcp tool %s returned empty content: %#v", name, result)
+	}
+	text := stringValue(content[0]["text"])
+	var out map[string]any
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("mcp tool %s returned invalid json: %s", name, text)
 	}
 	return out
 }

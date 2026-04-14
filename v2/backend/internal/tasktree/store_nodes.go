@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sort"
 	"strings"
 	"time"
 )
@@ -51,7 +52,7 @@ func (a *App) listNodesWithOptions(ctx context.Context, taskID string, opts node
 	if opts.ViewMode == "slim" {
 		selectFields = `n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.depth, n.sort_order, n.created_at`
 	} else if opts.ViewMode == "summary" || opts.ViewMode == "events" {
-		selectFields = `n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.progress, n.estimate, n.created_at, n.updated_at, EXISTS(SELECT 1 FROM nodes c WHERE c.parent_node_id = n.id AND c.deleted_at IS NULL) AS has_children`
+		selectFields = `n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.progress, n.estimate, n.depends_on_json, n.created_at, n.updated_at, EXISTS(SELECT 1 FROM nodes c WHERE c.parent_node_id = n.id AND c.deleted_at IS NULL) AS has_children`
 	}
 	query := `SELECT ` + selectFields + ` FROM nodes n WHERE n.task_id = ?`
 	args := []any{taskID}
@@ -79,6 +80,27 @@ func (a *App) listNodesWithOptions(ctx context.Context, taskID string, opts node
 		query += ` AND n.depth <= ?`
 		args = append(args, *opts.MaxDepth)
 	}
+	if opts.ParentNodeID != "" {
+		query += ` AND COALESCE(n.parent_node_id, '') = ?`
+		args = append(args, strings.TrimSpace(opts.ParentNodeID))
+	}
+	if opts.SubtreeRootNodeID != "" {
+		root, err := a.findNode(ctx, strings.TrimSpace(opts.SubtreeRootNodeID), false)
+		if err != nil {
+			return nil, err
+		}
+		if asString(root["task_id"]) != taskID {
+			return nil, &appError{Code: 400, Msg: "subtree_root_node_id does not belong to task"}
+		}
+		rootID := asString(root["id"])
+		rootPath := asString(root["path"])
+		query += ` AND (n.id = ? OR n.path LIKE ? ESCAPE '\')`
+		args = append(args, rootID, escapeLike(rootPath)+"/%")
+		if opts.MaxRelativeDepth != nil {
+			query += ` AND n.depth <= ?`
+			args = append(args, int(asFloat(root["depth"]))+*opts.MaxRelativeDepth)
+		}
+	}
 	if opts.UpdatedAfter != "" {
 		query += ` AND n.updated_at > ?`
 		args = append(args, opts.UpdatedAfter)
@@ -103,6 +125,25 @@ func (a *App) listNodesWithOptions(ctx context.Context, taskID string, opts node
 			query += ` AND EXISTS(SELECT 1 FROM nodes c2 WHERE c2.parent_node_id = n.id AND c2.deleted_at IS NULL)`
 		} else {
 			query += ` AND NOT EXISTS(SELECT 1 FROM nodes c2 WHERE c2.parent_node_id = n.id AND c2.deleted_at IS NULL)`
+		}
+	}
+
+	if opts.FilterMode == "focus" {
+		focusIDs, err := a.focusNodeIDs(ctx, taskID, opts)
+		if err != nil {
+			return nil, err
+		}
+		if len(focusIDs) == 0 {
+			return jsonMap{"items": []jsonMap{}, "has_more": false, "next_cursor": nil}, nil
+		}
+		ids := make([]string, 0, len(focusIDs))
+		for id := range focusIDs {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		query += ` AND n.id IN (` + placeholders(len(ids)) + `)`
+		for _, id := range ids {
+			args = append(args, id)
 		}
 	}
 
@@ -148,23 +189,6 @@ func (a *App) listNodesWithOptions(ctx context.Context, taskID string, opts node
 	items, err := scanRows(rows)
 	if err != nil {
 		return nil, err
-	}
-
-	if opts.FilterMode == "focus" {
-		focusIDs, err := a.focusNodeIDs(ctx, taskID, opts)
-		if err != nil {
-			return nil, err
-		}
-		if len(focusIDs) == 0 {
-			return jsonMap{"items": []jsonMap{}, "has_more": false, "next_cursor": nil}, nil
-		}
-		filtered := make([]jsonMap, 0, len(items))
-		for _, item := range items {
-			if _, ok := focusIDs[asString(item["id"])]; ok {
-				filtered = append(filtered, item)
-			}
-		}
-		items = filtered
 	}
 
 	hasMore := len(items) > opts.Limit
@@ -260,42 +284,64 @@ func (a *App) listLastEventsForNodes(ctx context.Context, nodeIDs []string) (map
 }
 
 func (a *App) focusNodeIDs(ctx context.Context, taskID string, opts nodeListOptions) (map[string]struct{}, error) {
-	rows, err := a.queryContext(ctx, `SELECT id, parent_node_id, status, kind FROM nodes WHERE task_id = ? AND deleted_at IS NULL ORDER BY path`, taskID)
+	rows, err := a.queryContext(ctx, `SELECT id, parent_node_id, status, kind, role, stage_node_id FROM nodes WHERE task_id = ? AND deleted_at IS NULL ORDER BY path`, taskID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	parentByID := map[string]string{}
-	statusByID := map[string]string{}
-	kindByID := map[string]string{}
+	nodes := make([]jsonMap, 0, 64)
 	for rows.Next() {
-		var id, status, kind string
-		var parentID sql.NullString
-		if err := rows.Scan(&id, &parentID, &status, &kind); err != nil {
+		var id, status, kind, role string
+		var parentID, stageNodeID sql.NullString
+		if err := rows.Scan(&id, &parentID, &status, &kind, &role, &stageNodeID); err != nil {
 			return nil, err
 		}
-		parentByID[id] = parentID.String
-		statusByID[id] = status
-		kindByID[id] = kind
+		nodes = append(nodes, jsonMap{
+			"id":             id,
+			"parent_node_id": parentID.String,
+			"status":         status,
+			"kind":           kind,
+			"role":           role,
+			"stage_node_id":  stageNodeID.String,
+		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	targetStatuses := map[string]struct{}{"ready": {}, "running": {}}
+	task, err := a.getTask(ctx, taskID, false)
+	if err != nil {
+		return nil, err
+	}
+	targetStatuses := map[string]struct{}{"ready": {}, "running": {}, "blocked": {}, "paused": {}}
 	if len(opts.Statuses) > 0 {
 		targetStatuses = map[string]struct{}{}
 		for _, status := range opts.Statuses {
 			targetStatuses[status] = struct{}{}
 		}
 	}
+	return focusNodeIDsFromNodes(nodes, asString(task["current_stage_node_id"]), targetStatuses), nil
+}
+
+func focusNodeIDsFromNodes(nodes []jsonMap, currentStageNodeID string, targetStatuses map[string]struct{}) map[string]struct{} {
+	if len(targetStatuses) == 0 {
+		targetStatuses = map[string]struct{}{"ready": {}, "running": {}, "blocked": {}, "paused": {}}
+	}
+	parentByID := make(map[string]string, len(nodes))
 	focusIDs := map[string]struct{}{}
-	for id, status := range statusByID {
-		if kindByID[id] == "group" {
+	for _, node := range nodes {
+		parentByID[asString(node["id"])] = asString(node["parent_node_id"])
+	}
+	for _, node := range nodes {
+		if asString(node["kind"]) == "group" || asString(node["role"]) == "stage" {
 			continue
 		}
-		if _, ok := targetStatuses[status]; !ok {
+		if currentStageNodeID != "" && asString(node["stage_node_id"]) != currentStageNodeID {
 			continue
 		}
+		if _, ok := targetStatuses[asString(node["status"])]; !ok {
+			continue
+		}
+		id := asString(node["id"])
 		focusIDs[id] = struct{}{}
 		parent := parentByID[id]
 		for parent != "" {
@@ -303,7 +349,7 @@ func (a *App) focusNodeIDs(ctx context.Context, taskID string, opts nodeListOpti
 			parent = parentByID[parent]
 		}
 	}
-	return focusIDs, nil
+	return focusIDs
 }
 
 func buildNodeSummary(item jsonMap) jsonMap {
@@ -326,29 +372,35 @@ func buildNodeSummary(item jsonMap) jsonMap {
 		nextAction = "drilldown"
 	}
 	return jsonMap{
-		"id":              item["id"],
-		"task_id":         item["task_id"],
-		"parent_node_id":  item["parent_node_id"],
-		"path":            item["path"],
-		"title":           item["title"],
-		"kind":            item["kind"],
-		"status":          item["status"],
-		"progress":        item["progress"],
-		"estimate":        item["estimate"],
-		"depends_on_json": item["depends_on_json"],
-		"updated_at":      item["updated_at"],
-		"has_children":    hasChildren,
-		"next_action":     nextAction,
+		"id":               item["id"],
+		"task_id":          item["task_id"],
+		"parent_node_id":   item["parent_node_id"],
+		"path":             item["path"],
+		"title":            item["title"],
+		"kind":             item["kind"],
+		"status":           item["status"],
+		"progress":         item["progress"],
+		"estimate":         item["estimate"],
+		"depends_on":       stringSliceFromAny(item["depends_on"]),
+		"depends_on_count": len(stringSliceFromAny(item["depends_on"])),
+		"updated_at":       item["updated_at"],
+		"has_children":     hasChildren,
+		"next_action":      nextAction,
 	}
 }
 
 func buildNodeSlim(item jsonMap) jsonMap {
 	return jsonMap{
-		"id":     item["id"],
-		"path":   item["path"],
-		"title":  item["title"],
-		"kind":   item["kind"],
-		"status": item["status"],
+		"id":             item["id"],
+		"parent_node_id": item["parent_node_id"],
+		"path":           item["path"],
+		"title":          item["title"],
+		"kind":           item["kind"],
+		"role":           item["role"],
+		"status":         item["status"],
+		"depth":          item["depth"],
+		"has_children":   item["has_children"],
+		"stage_node_id":  item["stage_node_id"],
 	}
 }
 
@@ -793,7 +845,6 @@ func (a *App) reportProgress(ctx context.Context, nodeID string, body progressBo
 		progress = math.Max(0, math.Min(1, progress))
 		status := asString(node["status"])
 		result := ""
-		clearLease := false
 		var runID string
 		if progress > 0 || strings.TrimSpace(asString(node["active_run_id"])) != "" {
 			run, err := a.ensureSyntheticRun(txCtx, node, "synthetic_progress", body.Message, body.Actor)
@@ -805,16 +856,13 @@ func (a *App) reportProgress(ctx context.Context, nodeID string, body progressBo
 		if progress > 0 && (status == "pending" || status == "ready") {
 			status = "running"
 		}
-		if progress >= 1 {
-			status = "done"
-			result = "done"
-			clearLease = true
-		}
-		query := `UPDATE nodes SET progress = ?, status = ?, result = ?, updated_at = ?, version = version + 1`
-		args := []any{progress, status, result, utcNowISO()}
-		if clearLease {
-			query += `, claimed_by_type = NULL, claimed_by_id = NULL, lease_until = NULL`
-		}
+		// progress(1.0) does NOT auto-mark done — only complete() does.
+		// This avoids the semantic overlap where progress(1) + complete(memory) conflicts.
+
+		// Renew lease on every progress call (extend by 15 min from now)
+		leaseRenewal := time.Now().UTC().Add(15 * time.Minute).Format("2006-01-02T15:04:05.000000Z")
+		query := `UPDATE nodes SET progress = ?, status = ?, result = ?, updated_at = ?, version = version + 1, lease_until = ?`
+		args := []any{progress, status, result, utcNowISO(), leaseRenewal}
 		query += ` WHERE id = ?`
 		args = append(args, nodeID)
 		if _, err := a.execContext(txCtx, query, args...); err != nil {
@@ -840,17 +888,7 @@ func (a *App) reportProgress(ctx context.Context, nodeID string, body progressBo
 			}); err != nil {
 				return err
 			}
-			if progress >= 1 {
-				doneResult := "done"
-				finishedStatus := "finished"
-				if _, err := a.finishRun(txCtx, runID, runFinish{
-					Result:        &doneResult,
-					Status:        &finishedStatus,
-					OutputPreview: body.Message,
-				}); err != nil {
-					return err
-				}
-			}
+			// Run is NOT auto-finished on progress(1.0) — only complete() finishes the run.
 		}
 		if err := a.rollupTask(txCtx, asString(node["task_id"])); err != nil {
 			return err
@@ -935,9 +973,9 @@ func (a *App) completeNode(ctx context.Context, nodeID string, body completeBody
 		doneResult := "done"
 		finishedStatus := "finished"
 		if _, err := a.finishRun(txCtx, runID, runFinish{
-			Result:        &doneResult,
-			Status:        &finishedStatus,
-			OutputPreview: body.Message,
+			Result:           &doneResult,
+			Status:           &finishedStatus,
+			OutputPreview:    body.Message,
 			StructuredResult: body.ResultPayload,
 		}); err != nil {
 			return err
@@ -947,7 +985,11 @@ func (a *App) completeNode(ctx context.Context, nodeID string, body completeBody
 			return err
 		}
 		// Inline memory patch if provided
+		hasDeprecatedMemField := false
 		if body.Memory != nil {
+			if body.Memory.ExecutionLog != nil || body.Memory.AppendExecutionLog != nil {
+				hasDeprecatedMemField = true
+			}
 			if _, pErr := a.patchNodeMemoryFull(txCtx, nodeID, *body.Memory); pErr != nil {
 				return pErr
 			}
@@ -958,6 +1000,9 @@ func (a *App) completeNode(ctx context.Context, nodeID string, body completeBody
 		updatedNode, err = a.findNode(txCtx, nodeID, false)
 		if err == nil && len(warnings) > 0 {
 			updatedNode["warnings"] = warnings
+		}
+		if err == nil && hasDeprecatedMemField {
+			updatedNode["_warning"] = "execution_log / append_execution_log 已废弃，系统自动从 run_logs 聚合。请改用 progress(log_content=...) 记录执行过程。传入的值已被忽略。"
 		}
 		return err
 	})

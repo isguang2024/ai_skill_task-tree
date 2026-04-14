@@ -150,8 +150,8 @@ func (a *App) rebuildSearchIndex(ctx context.Context) error {
 	if _, err := a.execContext(ctx, `DELETE FROM search_index`); err != nil {
 		return err
 	}
-	// Index all tasks
-	taskRows, err := a.queryContext(ctx, `SELECT * FROM tasks WHERE deleted_at IS NULL`)
+	// Index all tasks (only need id, title, goal for indexing)
+	taskRows, err := a.queryContext(ctx, `SELECT id, title, goal FROM tasks WHERE deleted_at IS NULL`)
 	if err != nil {
 		return err
 	}
@@ -162,8 +162,8 @@ func (a *App) rebuildSearchIndex(ctx context.Context) error {
 	for _, task := range tasks {
 		a.indexTask(ctx, task)
 	}
-	// Index all nodes
-	nodeRows, err := a.queryContext(ctx, `SELECT * FROM nodes WHERE deleted_at IS NULL`)
+	// Index all nodes (only need id, task_id, title, instruction for indexing)
+	nodeRows, err := a.queryContext(ctx, `SELECT id, task_id, title, instruction FROM nodes WHERE deleted_at IS NULL`)
 	if err != nil {
 		return err
 	}
@@ -174,8 +174,8 @@ func (a *App) rebuildSearchIndex(ctx context.Context) error {
 	for _, node := range nodes {
 		a.indexNode(ctx, node)
 	}
-	// Index all node memories
-	memRows, err := a.queryContext(ctx, `SELECT * FROM node_memory_current`)
+	// Index all node memories (only need fields used by indexNodeMemory)
+	memRows, err := a.queryContext(ctx, `SELECT node_id, task_id, summary_text, execution_log, manual_note_text, conclusions_json, decisions_json, risks_json, blockers_json, next_actions_json, evidence_json FROM node_memory_current`)
 	if err != nil {
 		return err
 	}

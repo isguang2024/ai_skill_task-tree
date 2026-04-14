@@ -43,6 +43,15 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, items)
 	case path == "/projects" && r.Method == http.MethodGet:
+		if r.URL.Query().Get("view_mode") == "summary_with_stats" {
+			items, err := a.listProjectsWithStats(r.Context(), r.URL.Query().Get("q"), r.URL.Query().Get("include_deleted") == "true", parseIntDefault(r.URL.Query().Get("limit"), 100))
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, items)
+			return
+		}
 		items, err := a.listProjects(r.Context(), r.URL.Query().Get("q"), r.URL.Query().Get("include_deleted") == "true", parseIntDefault(r.URL.Query().Get("limit"), 100))
 		if err != nil {
 			writeErr(w, err)
@@ -170,6 +179,14 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
+	case strings.HasPrefix(path, "/nodes/") && r.Method == http.MethodDelete && !strings.Contains(strings.TrimPrefix(path, "/nodes/"), "/"):
+		// DELETE /v1/nodes/{id}
+		item, err := a.deleteNode(r.Context(), lastSegment(path))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
 	case strings.HasSuffix(path, "/transition") && strings.HasPrefix(path, "/tasks/") && r.Method == http.MethodPost:
 		var body transitionBody
 		if err := decodeJSON(r, &body); err != nil {
@@ -269,7 +286,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, item)
 	case strings.HasSuffix(path, "/runs") && strings.Contains(path, "/nodes/") && r.Method == http.MethodGet:
-		items, err := a.listNodeRuns(r.Context(), nodeIDFromPath(path), parseIntDefault(r.URL.Query().Get("limit"), 20))
+		items, err := a.listNodeRunsWithOptions(r.Context(), nodeIDFromPath(path), parseRunListOptions(r))
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -311,7 +328,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, item)
 	case strings.HasPrefix(path, "/runs/") && r.Method == http.MethodGet && !strings.Contains(strings.TrimPrefix(path, "/runs/"), "/"):
-		item, err := a.getRun(r.Context(), lastSegment(path))
+		item, err := a.getRunWithOptions(r.Context(), lastSegment(path), parseRunListOptions(r))
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -344,7 +361,17 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, item)
 	case strings.HasPrefix(path, "/nodes/") && strings.HasSuffix(path, "/memory") && r.Method == http.MethodGet:
-		item, err := a.getNodeMemory(r.Context(), nodeIDFromPath(path))
+		level := r.URL.Query().Get("level")
+		var item jsonMap
+		var err error
+		switch level {
+		case "slim":
+			item, err = a.getNodeMemorySlim(r.Context(), nodeIDFromPath(path))
+		case "full":
+			item, err = a.getNodeMemory(r.Context(), nodeIDFromPath(path))
+		default:
+			item, err = a.getNodeMemoryStructured(r.Context(), nodeIDFromPath(path))
+		}
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -384,7 +411,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, item)
 	case strings.HasPrefix(path, "/nodes/") && strings.HasSuffix(path, "/context") && r.Method == http.MethodGet:
-		item, err := a.buildNodeContext(r.Context(), nodeIDFromPath(path))
+		item, err := a.buildNodeContextWithOptions(r.Context(), nodeIDFromPath(path), parseNodeContextOptions(r))
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -392,12 +419,12 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, item)
 	case strings.HasSuffix(path, "/nodes") && r.Method == http.MethodGet:
 		if !hasNodeListOptionQuery(r) {
-			items, err := a.listNodes(r.Context(), taskIDFromPath(path))
+			items, err := a.listNodesWithOptions(r.Context(), taskIDFromPath(path), nodeListOptions{ViewMode: "summary", Limit: 100})
 			if err != nil {
 				writeErr(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, jsonMap{"items": items, "has_more": false})
+			writeJSON(w, http.StatusOK, items)
 			return
 		}
 		items, err := a.listNodesWithOptions(r.Context(), taskIDFromPath(path), parseNodeListOptions(r))
@@ -574,8 +601,9 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		item, err := a.resumeTaskWithOptions(
 			r.Context(),
 			taskIDFromPath(path),
-			parseNodeListOptions(r),
+			parseResumeNodeListOptions(r),
 			parseEventListOptions(r),
+			parseResumeOptions(r),
 		)
 		if err != nil {
 			writeErr(w, err)
@@ -674,14 +702,14 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, item)
 	case strings.HasSuffix(path, "/artifacts") && strings.Contains(path, "/nodes/") && r.Method == http.MethodGet:
-		item, err := a.listArtifacts(r.Context(), taskIDFromPath(path), strPtr(nodeIDFromPath(path)))
+		item, err := a.listArtifactsWithOptions(r.Context(), taskIDFromPath(path), strPtr(nodeIDFromPath(path)), parseArtifactListOptions(r))
 		if err != nil {
 			writeErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, item)
 	case strings.HasSuffix(path, "/artifacts") && r.Method == http.MethodGet:
-		item, err := a.listArtifacts(r.Context(), taskIDFromPath(path), nil)
+		item, err := a.listArtifactsWithOptions(r.Context(), taskIDFromPath(path), nil, parseArtifactListOptions(r))
 		if err != nil {
 			writeErr(w, err)
 			return
@@ -923,27 +951,91 @@ func parseNodeListOptions(r *http.Request) nodeListOptions {
 			maxDepth = &n
 		}
 	}
+	var maxRelativeDepth *int
+	if v := q.Get("max_relative_depth"); v != "" {
+		n := parseIntDefault(v, -1)
+		if n >= 0 {
+			maxRelativeDepth = &n
+		}
+	}
 	var hasChildren *bool
 	if v := strings.ToLower(strings.TrimSpace(q.Get("has_children"))); v == "true" || v == "false" {
 		b := v == "true"
 		hasChildren = &b
 	}
 	return nodeListOptions{
-		Statuses:        splitCSV(q.Get("status")),
-		Kinds:           splitCSV(q.Get("kind")),
-		Depth:           depth,
-		MaxDepth:        maxDepth,
-		UpdatedAfter:    q.Get("updated_after"),
-		HasChildren:     hasChildren,
-		Query:           q.Get("q"),
-		Limit:           parseIntDefault(q.Get("limit"), 100),
-		Cursor:          q.Get("cursor"),
-		SortBy:          q.Get("sort_by"),
-		SortOrder:       q.Get("sort_order"),
-		ViewMode:        q.Get("view_mode"),
-		FilterMode:      q.Get("filter_mode"),
-		IncludeFullTree: q.Get("include_full_tree") == "true",
-		IncludeHidden:   q.Get("include_deleted") == "true",
+		Statuses:          splitCSV(q.Get("status")),
+		Kinds:             splitCSV(q.Get("kind")),
+		Depth:             depth,
+		MaxDepth:          maxDepth,
+		ParentNodeID:      q.Get("parent_node_id"),
+		SubtreeRootNodeID: q.Get("subtree_root_node_id"),
+		MaxRelativeDepth:  maxRelativeDepth,
+		UpdatedAfter:      q.Get("updated_after"),
+		HasChildren:       hasChildren,
+		Query:             q.Get("q"),
+		Limit:             parseIntDefault(q.Get("limit"), 100),
+		Cursor:            q.Get("cursor"),
+		SortBy:            q.Get("sort_by"),
+		SortOrder:         q.Get("sort_order"),
+		ViewMode:          q.Get("view_mode"),
+		FilterMode:        q.Get("filter_mode"),
+		IncludeFullTree:   q.Get("include_full_tree") == "true",
+		IncludeHidden:     q.Get("include_deleted") == "true",
+	}
+}
+
+func parseResumeNodeListOptions(r *http.Request) nodeListOptions {
+	opts := nodeListOptions{}
+	if hasNodeListOptionQuery(r) {
+		opts = parseNodeListOptions(r)
+	}
+	opts.IncludeFullTree = r.URL.Query().Get("include_full_tree") == "true"
+	return opts
+}
+
+func parseResumeOptions(r *http.Request) resumeOptions {
+	includeSet := map[string]struct{}{}
+	for _, item := range splitCSV(r.URL.Query().Get("include")) {
+		includeSet[strings.ToLower(strings.TrimSpace(item))] = struct{}{}
+	}
+	_, includeEvents := includeSet["events"]
+	_, includeRuns := includeSet["runs"]
+	_, includeArtifacts := includeSet["artifacts"]
+	_, includeNextNodeContext := includeSet["next_node_context"]
+	_, includeTaskMemory := includeSet["task_memory"]
+	_, includeStageMemory := includeSet["stage_memory"]
+	return resumeOptions{
+		IncludeEvents:          includeEvents,
+		IncludeRuns:            includeRuns,
+		IncludeArtifacts:       includeArtifacts,
+		IncludeNextNodeContext: includeNextNodeContext,
+		IncludeTaskMemory:      includeTaskMemory,
+		IncludeStageMemory:     includeStageMemory,
+	}
+}
+
+func parseNodeContextOptions(r *http.Request) nodeContextOptions {
+	return nodeContextOptions{Preset: r.URL.Query().Get("preset")}
+}
+
+func parseRunListOptions(r *http.Request) runListOptions {
+	q := r.URL.Query()
+	return runListOptions{
+		Limit:       parseIntDefault(q.Get("limit"), 20),
+		Cursor:      q.Get("cursor"),
+		ViewMode:    q.Get("view_mode"),
+		IncludeLogs: q.Get("include_logs") == "true",
+	}
+}
+
+func parseArtifactListOptions(r *http.Request) artifactListOptions {
+	q := r.URL.Query()
+	return artifactListOptions{
+		Limit:    parseIntDefault(q.Get("limit"), 100),
+		Cursor:   q.Get("cursor"),
+		ViewMode: q.Get("view_mode"),
+		Kind:     q.Get("kind"),
 	}
 }
 
@@ -966,6 +1058,7 @@ func hasNodeListOptionQuery(r *http.Request) bool {
 	q := r.URL.Query()
 	keys := []string{
 		"status", "kind", "depth", "max_depth", "updated_after",
+		"parent_node_id", "subtree_root_node_id", "max_relative_depth",
 		"has_children", "q", "limit", "cursor", "sort_by", "sort_order",
 		"view_mode", "filter_mode", "include_deleted",
 	}

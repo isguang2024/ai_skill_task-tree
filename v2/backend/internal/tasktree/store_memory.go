@@ -6,12 +6,40 @@ import (
 	"strings"
 )
 
+// getNodeMemory returns all memory fields including execution_log (full mode).
 func (a *App) getNodeMemory(ctx context.Context, nodeID string) (jsonMap, error) {
+	return a.getNodeMemoryLevel(ctx, nodeID, "full")
+}
+
+// getNodeMemoryStructured returns memory without execution_log (saves bandwidth for long logs).
+func (a *App) getNodeMemoryStructured(ctx context.Context, nodeID string) (jsonMap, error) {
+	return a.getNodeMemoryLevel(ctx, nodeID, "structured")
+}
+
+// getNodeMemorySlim returns only summary_text + version + timestamps (for listings/resume).
+func (a *App) getNodeMemorySlim(ctx context.Context, nodeID string) (jsonMap, error) {
+	return a.getNodeMemoryLevel(ctx, nodeID, "slim")
+}
+
+const nodeMemoryColsSlim = `node_id, task_id, stage_node_id, summary_text, version, created_at, updated_at`
+const nodeMemoryColsStructured = `node_id, task_id, stage_node_id, summary_text, conclusions_json, decisions_json, risks_json, blockers_json, next_actions_json, evidence_json, manual_note_text, source_run_id, version, created_at, updated_at`
+
+func (a *App) getNodeMemoryLevel(ctx context.Context, nodeID string, level string) (jsonMap, error) {
 	node, err := a.findNode(ctx, nodeID, false)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := a.queryContext(ctx, `SELECT * FROM node_memory_current WHERE node_id = ?`, nodeID)
+	// For full level, use structured cols (skip stored execution_log) — we'll auto-generate it from run_logs
+	var cols string
+	switch level {
+	case "slim":
+		cols = nodeMemoryColsSlim
+	case "full":
+		cols = nodeMemoryColsStructured // read structured, then aggregate run_logs
+	default:
+		cols = nodeMemoryColsStructured
+	}
+	rows, err := a.queryContext(ctx, `SELECT `+cols+` FROM node_memory_current WHERE node_id = ?`, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -19,10 +47,37 @@ func (a *App) getNodeMemory(ctx context.Context, nodeID string) (jsonMap, error)
 	if err != nil {
 		return nil, err
 	}
+	var mem jsonMap
 	if len(items) > 0 {
-		return items[0], nil
+		mem = items[0]
+	} else {
+		mem, err = a.initNodeMemory(ctx, node)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return a.initNodeMemory(ctx, node)
+	// Strip fields for slim level
+	if level == "slim" {
+		delete(mem, "execution_log")
+		delete(mem, "conclusions")
+		delete(mem, "decisions")
+		delete(mem, "risks")
+		delete(mem, "blockers")
+		delete(mem, "next_actions")
+		delete(mem, "evidence")
+		delete(mem, "manual_note_text")
+		delete(mem, "source_run_id")
+	}
+	// For full level, auto-generate execution_log from run_logs
+	if level == "full" {
+		aggregated, err := a.aggregateNodeRunLogs(ctx, nodeID)
+		if err == nil && aggregated != "" {
+			mem["execution_log"] = aggregated
+		} else {
+			mem["execution_log"] = ""
+		}
+	}
+	return mem, err
 }
 
 func (a *App) getStageMemory(ctx context.Context, stageNodeID string) (jsonMap, error) {
@@ -66,6 +121,31 @@ func (a *App) getTaskMemory(ctx context.Context, taskID string) (jsonMap, error)
 	return a.initTaskMemory(ctx, task)
 }
 
+// batchGetNodeMemorySummaries fetches summary fields for multiple nodes in one query.
+// Returns map[nodeID]jsonMap with summary_text, decisions, blockers fields.
+func (a *App) batchGetNodeMemorySummaries(ctx context.Context, nodeIDs []string) (map[string]jsonMap, error) {
+	result := make(map[string]jsonMap, len(nodeIDs))
+	if len(nodeIDs) == 0 {
+		return result, nil
+	}
+	args := make([]any, len(nodeIDs))
+	for i, id := range nodeIDs {
+		args[i] = id
+	}
+	rows, err := a.queryContext(ctx, `SELECT node_id, summary_text, decisions_json, blockers_json FROM node_memory_current WHERE node_id IN (`+placeholders(len(nodeIDs))+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	items, err := scanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		result[asString(item["node_id"])] = item
+	}
+	return result, nil
+}
+
 func (a *App) patchNodeMemoryManualNote(ctx context.Context, nodeID, note string, expectedVersion *int) (jsonMap, error) {
 	var out jsonMap
 	err := a.withTx(ctx, func(txCtx context.Context) error {
@@ -94,6 +174,7 @@ func (a *App) patchNodeMemoryManualNote(ctx context.Context, nodeID, note string
 
 func (a *App) patchNodeMemoryFull(ctx context.Context, nodeID string, body memoryFullPatchBody) (jsonMap, error) {
 	var out jsonMap
+	hasDeprecatedField := body.ExecutionLog != nil || body.AppendExecutionLog != nil
 	err := a.withTx(ctx, func(txCtx context.Context) error {
 		mem, err := a.getNodeMemory(txCtx, nodeID)
 		if err != nil {
@@ -134,22 +215,8 @@ func (a *App) patchNodeMemoryFull(ctx context.Context, nodeID string, body memor
 			setClauses = append(setClauses, "evidence_json = ?")
 			args = append(args, mustJSON(body.Evidence))
 		}
-		if body.ExecutionLog != nil {
-			setClauses = append(setClauses, "execution_log = ?")
-			args = append(args, *body.ExecutionLog)
-		} else if body.AppendExecutionLog != nil {
-			appendText := strings.TrimSpace(*body.AppendExecutionLog)
-			if appendText != "" {
-				existing, _ := mem["execution_log"].(string)
-				if existing != "" {
-					setClauses = append(setClauses, "execution_log = ?")
-					args = append(args, existing+"\n"+appendText)
-				} else {
-					setClauses = append(setClauses, "execution_log = ?")
-					args = append(args, appendText)
-				}
-			}
-		}
+		// execution_log and append_execution_log are deprecated —
+		// execution_log is now auto-generated from run_logs. Warn instead of silently ignoring.
 		if body.ManualNoteText != nil {
 			setClauses = append(setClauses, "manual_note_text = ?")
 			args = append(args, strings.TrimSpace(*body.ManualNoteText))
@@ -165,6 +232,9 @@ func (a *App) patchNodeMemoryFull(ctx context.Context, nodeID string, body memor
 	})
 	if err == nil && out != nil {
 		a.indexNodeMemory(ctx, out)
+		if hasDeprecatedField {
+			out["_warning"] = "execution_log / append_execution_log 已废弃，系统自动从 run_logs 聚合。请改用 progress(log_content=...) 记录执行过程。传入的值已被忽略。"
+		}
 	}
 	return out, err
 }

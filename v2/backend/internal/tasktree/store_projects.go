@@ -47,6 +47,47 @@ func (a *App) listProjects(ctx context.Context, q string, includeDeleted bool, l
 	return scanRows(rows)
 }
 
+func (a *App) listProjectsWithStats(ctx context.Context, q string, includeDeleted bool, limit int) ([]jsonMap, error) {
+	projects, err := a.listProjects(ctx, q, includeDeleted, limit)
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT project_id,
+		COUNT(*) AS total,
+		SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
+		SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked,
+		SUM(CASE WHEN status = 'paused' THEN 1 ELSE 0 END) AS paused,
+		SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done
+		FROM tasks WHERE project_id IS NOT NULL`
+	args := []any{}
+	if !includeDeleted {
+		query += ` AND deleted_at IS NULL`
+	}
+	query += ` GROUP BY project_id`
+	rows, err := a.queryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := scanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	byProject := map[string]jsonMap{}
+	for _, stat := range stats {
+		byProject[asString(stat["project_id"])] = jsonMap{
+			"total":   int(asFloat(stat["total"])),
+			"running": int(asFloat(stat["running"])),
+			"blocked": int(asFloat(stat["blocked"])),
+			"paused":  int(asFloat(stat["paused"])),
+			"done":    int(asFloat(stat["done"])),
+		}
+	}
+	for _, project := range projects {
+		project["_summary"] = byProject[asString(project["id"])]
+	}
+	return projects, nil
+}
+
 func (a *App) getProject(ctx context.Context, projectID string, includeDeleted bool) (jsonMap, error) {
 	rows, err := a.queryContext(ctx, `SELECT * FROM projects WHERE id = ?`, projectID)
 	if err != nil {
@@ -206,7 +247,7 @@ func (a *App) projectOverview(ctx context.Context, projectID string, includeDele
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT * FROM tasks WHERE project_id = ?`
+	query := `SELECT id, task_key, title, status, result, summary_percent, summary_done, summary_total, summary_blocked, current_stage_node_id, project_id, updated_at, created_at FROM tasks WHERE project_id = ?`
 	args := []any{projectID}
 	if !includeDeleted {
 		query += ` AND deleted_at IS NULL`
@@ -221,6 +262,7 @@ func (a *App) projectOverview(ctx context.Context, projectID string, includeDele
 	if err != nil {
 		return nil, err
 	}
+	taskIDs := make([]string, 0, len(tasks))
 	summary := map[string]int{
 		"total":    len(tasks),
 		"ready":    0,
@@ -232,32 +274,161 @@ func (a *App) projectOverview(ctx context.Context, projectID string, includeDele
 		"closed":   0,
 	}
 	for _, task := range tasks {
+		taskIDs = append(taskIDs, asString(task["id"]))
 		state := asString(task["status"])
 		if _, ok := summary[state]; ok {
 			summary[state]++
 		}
-		if remaining, err := a.getRemaining(ctx, asString(task["id"])); err == nil {
-			task["remaining_nodes"] = remaining["remaining_nodes"]
-			task["blocked_nodes"] = remaining["blocked_nodes"]
-			task["paused_nodes"] = remaining["paused_nodes"]
+	}
+	if len(taskIDs) > 0 {
+		placeholdersText := placeholders(len(taskIDs))
+		args := make([]any, 0, len(taskIDs))
+		for _, taskID := range taskIDs {
+			args = append(args, taskID)
 		}
-		if currentStageID := asString(task["current_stage_node_id"]); currentStageID != "" {
-			if stage, err := a.findNode(ctx, currentStageID, false); err == nil {
+		remainingRows, err := a.queryContext(ctx, `SELECT task_id,
+			SUM(CASE WHEN kind != 'group' AND COALESCE(result, '') != 'done' AND COALESCE(result, '') != 'canceled' THEN 1 ELSE 0 END) AS remaining_nodes,
+			SUM(CASE WHEN kind != 'group' AND status = 'blocked' THEN 1 ELSE 0 END) AS blocked_nodes,
+			SUM(CASE WHEN kind != 'group' AND status = 'paused' THEN 1 ELSE 0 END) AS paused_nodes
+			FROM nodes WHERE deleted_at IS NULL AND task_id IN (`+placeholdersText+`) GROUP BY task_id`, args...)
+		if err != nil {
+			return nil, err
+		}
+		remainingItems, err := scanRows(remainingRows)
+		if err != nil {
+			return nil, err
+		}
+		remainingByTask := map[string]jsonMap{}
+		for _, item := range remainingItems {
+			remainingByTask[asString(item["task_id"])] = item
+		}
+
+		stageIDs := make([]string, 0, len(tasks))
+		for _, task := range tasks {
+			if currentStageID := asString(task["current_stage_node_id"]); currentStageID != "" {
+				stageIDs = append(stageIDs, currentStageID)
+			}
+		}
+		stageByID := map[string]jsonMap{}
+		if len(stageIDs) > 0 {
+			stageArgs := make([]any, 0, len(stageIDs))
+			for _, stageID := range stageIDs {
+				stageArgs = append(stageArgs, stageID)
+			}
+			stageRows, err := a.queryContext(ctx, `SELECT id, path, title FROM nodes WHERE deleted_at IS NULL AND id IN (`+placeholders(len(stageIDs))+`)`, stageArgs...)
+			if err != nil {
+				return nil, err
+			}
+			stageItems, err := scanRows(stageRows)
+			if err != nil {
+				return nil, err
+			}
+			for _, item := range stageItems {
+				stageByID[asString(item["id"])] = item
+			}
+		}
+
+		memoryRows, err := a.queryContext(ctx, `SELECT task_id, summary_text, next_actions_json, risks_json, blockers_json, decisions_json, version, updated_at FROM task_memory_current WHERE task_id IN (`+placeholdersText+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		memoryItems, err := scanRows(memoryRows)
+		if err != nil {
+			return nil, err
+		}
+		memoryByTask := map[string]jsonMap{}
+		for _, item := range memoryItems {
+			memoryByTask[asString(item["task_id"])] = jsonMap{
+				"task_id":      item["task_id"],
+				"summary":      item["summary_text"],
+				"summary_text": item["summary_text"],
+				"next_actions": item["next_actions"],
+				"risks":        item["risks"],
+				"blockers":     item["blockers"],
+				"decisions":    item["decisions"],
+				"version":      item["version"],
+				"updated_at":   item["updated_at"],
+			}
+		}
+
+		for _, task := range tasks {
+			taskID := asString(task["id"])
+			if remaining := remainingByTask[taskID]; remaining != nil {
+				task["remaining_nodes"] = remaining["remaining_nodes"]
+				task["blocked_nodes"] = remaining["blocked_nodes"]
+				task["paused_nodes"] = remaining["paused_nodes"]
+			} else {
+				task["remaining_nodes"] = 0
+				task["blocked_nodes"] = 0
+				task["paused_nodes"] = 0
+			}
+			if stage := stageByID[asString(task["current_stage_node_id"])]; stage != nil {
 				task["current_stage"] = jsonMap{
 					"id":    stage["id"],
 					"path":  stage["path"],
 					"title": stage["title"],
 				}
 			}
+			if mem := memoryByTask[taskID]; mem != nil {
+				task["memory"] = mem
+			} else {
+				task["memory"] = jsonMap{
+					"task_id":      task["id"],
+					"summary":      "",
+					"summary_text": "",
+					"next_actions": []any{},
+					"risks":        []any{},
+					"blockers":     []any{},
+					"decisions":    []any{},
+				}
+			}
 		}
-		if mem, err := a.getTaskMemory(ctx, asString(task["id"])); err == nil {
-			task["memory"] = mem
+	}
+	overviewTasks := make([]jsonMap, 0, len(tasks))
+	for _, task := range tasks {
+		remainingSummary := jsonMap{
+			"nodes":   task["remaining_nodes"],
+			"blocked": task["blocked_nodes"],
+			"paused":  task["paused_nodes"],
 		}
+		if remainingSummary["nodes"] == nil {
+			remainingSummary["nodes"] = 0
+		}
+		if remainingSummary["blocked"] == nil {
+			remainingSummary["blocked"] = 0
+		}
+		if remainingSummary["paused"] == nil {
+			remainingSummary["paused"] = 0
+		}
+		memorySummary := asAnyMap(task["memory"])
+		if memorySummary == nil {
+			memorySummary = jsonMap{
+				"summary":      "",
+				"summary_text": "",
+				"next_actions": []any{},
+			}
+		}
+		overviewTasks = append(overviewTasks, jsonMap{
+			"id":              task["id"],
+			"task_key":        task["task_key"],
+			"title":           task["title"],
+			"status":          task["status"],
+			"result":          task["result"],
+			"summary_percent": task["summary_percent"],
+			"updated_at":      task["updated_at"],
+			"current_stage":   task["current_stage"],
+			"remaining":       remainingSummary,
+			"memory": jsonMap{
+				"summary":      memorySummary["summary"],
+				"summary_text": memorySummary["summary_text"],
+				"next_actions": memorySummary["next_actions"],
+			},
+		})
 	}
 	return jsonMap{
 		"project": project,
 		"summary": summary,
-		"tasks":   tasks,
+		"tasks":   overviewTasks,
 	}, nil
 }
 

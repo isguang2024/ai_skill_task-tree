@@ -2,7 +2,6 @@ package tasktree
 
 import (
 	"context"
-	"encoding/json"
 	"sort"
 	"strings"
 )
@@ -52,30 +51,7 @@ func (a *App) buildFocusNodes(ctx context.Context, taskID string) ([]jsonMap, js
 			}
 		}
 	}
-	active := map[string]struct{}{}
-	for _, node := range nodes {
-		status := asString(node["status"])
-		if status != "ready" && status != "running" && status != "blocked" && status != "paused" {
-			continue
-		}
-		if asString(node["role"]) == "stage" {
-			continue
-		}
-		if currentStageNodeID != "" && asString(node["stage_node_id"]) != currentStageNodeID {
-			continue
-		}
-		id := asString(node["id"])
-		active[id] = struct{}{}
-		parentID := asString(node["parent_node_id"])
-		for parentID != "" {
-			active[parentID] = struct{}{}
-			parent, err := a.findNode(ctx, parentID, false)
-			if err != nil {
-				break
-			}
-			parentID = asString(parent["parent_node_id"])
-		}
-	}
+	active := focusNodeIDsFromNodes(nodes, currentStageNodeID, nil)
 	items := make([]jsonMap, 0, len(nodes))
 	for _, node := range nodes {
 		if _, ok := active[asString(node["id"])]; !ok {
@@ -104,7 +80,7 @@ func (a *App) findNextNode(ctx context.Context, taskID string) (jsonMap, error) 
 	}
 
 	nodeID := asString(nextNode["id"])
-	memory, _ := a.getNodeMemory(ctx, nodeID)
+	memory, _ := a.getNodeMemoryStructured(ctx, nodeID) // no execution_log for next_node
 
 	// 构建推荐动作
 	status := asString(nextNode["status"])
@@ -155,45 +131,55 @@ func (a *App) findNextNode(ctx context.Context, taskID string) (jsonMap, error) 
 }
 
 func (a *App) buildNodeContext(ctx context.Context, nodeID string) (jsonMap, error) {
+	return a.buildNodeContextWithOptions(ctx, nodeID, nodeContextOptions{Preset: "full"})
+}
+
+func (a *App) buildNodeContextWithOptions(ctx context.Context, nodeID string, opts nodeContextOptions) (jsonMap, error) {
 	node, err := a.findNode(ctx, nodeID, false)
 	if err != nil {
 		return nil, err
+	}
+	preset := strings.ToLower(strings.TrimSpace(opts.Preset))
+	if preset == "" {
+		preset = "full"
 	}
 	taskID := asString(node["task_id"])
 	task, err := a.getTask(ctx, taskID, false)
 	if err != nil {
 		return nil, err
 	}
-	memory, err := a.getNodeMemory(ctx, nodeID)
+	// Batch-fetch ancestor chain using recursive CTE (replaces N+1 findNode loop)
+	ancestorChain, err := a.fetchAncestorChain(ctx, asString(node["parent_node_id"]))
 	if err != nil {
 		return nil, err
 	}
-	// 聚合祖先链（含每个祖先的 Memory）
-	ancestors := []jsonMap{}
-	parentID := asString(node["parent_node_id"])
-	for parentID != "" {
-		parent, err := a.findNode(ctx, parentID, false)
-		if err != nil {
-			break
+	var ancestorMemories map[string]jsonMap
+	if preset == "full" && len(ancestorChain) > 0 {
+		memIDs := make([]string, 0, len(ancestorChain))
+		for _, anc := range ancestorChain {
+			memIDs = append(memIDs, asString(anc["id"]))
 		}
+		ancestorMemories, _ = a.batchGetNodeMemorySummaries(ctx, memIDs)
+	}
+	ancestors := make([]jsonMap, 0, len(ancestorChain))
+	for _, parent := range ancestorChain {
 		ancestorEntry := jsonMap{
 			"node_id": parent["id"],
 			"path":    parent["path"],
 			"title":   parent["title"],
 			"status":  parent["status"],
 		}
-		if parentMemory, mErr := a.getNodeMemory(ctx, parentID); mErr == nil {
-			ancestorEntry["memory_summary"] = asString(parentMemory["summary_text"])
-			ancestorEntry["decisions"] = parentMemory["decisions"]
-			ancestorEntry["blockers"] = parentMemory["blockers"]
+		if preset == "full" && ancestorMemories != nil {
+			if mem, ok := ancestorMemories[asString(parent["id"])]; ok {
+				ancestorEntry["memory_summary"] = asString(mem["summary_text"])
+				ancestorEntry["decisions"] = mem["decisions"]
+				ancestorEntry["blockers"] = mem["blockers"]
+			}
 		}
-		ancestors = append([]jsonMap{ancestorEntry}, ancestors...)
-		parentID = asString(parent["parent_node_id"])
+		ancestors = append(ancestors, ancestorEntry)
 	}
 
-	// 聚合任务级 Memory
-	taskMemory, _ := a.getTaskMemory(ctx, taskID)
-	rows, err := a.queryContext(ctx, `SELECT * FROM nodes WHERE task_id = ? AND parent_node_id = ? AND deleted_at IS NULL ORDER BY sort_order, created_at`, taskID, node["parent_node_id"])
+	rows, err := a.queryContext(ctx, `SELECT id, task_id, parent_node_id, path, title, kind, status, progress, estimate, depends_on_json, updated_at, sort_order, created_at FROM nodes WHERE task_id = ? AND COALESCE(parent_node_id, '') = ? AND deleted_at IS NULL ORDER BY sort_order, created_at`, taskID, asString(node["parent_node_id"]))
 	if err != nil {
 		return nil, err
 	}
@@ -208,50 +194,73 @@ func (a *App) buildNodeContext(ctx context.Context, nodeID string) (jsonMap, err
 		}
 		siblingSummaries = append(siblingSummaries, buildNodeSummary(sibling))
 	}
-	runs, err := a.listNodeRuns(ctx, nodeID, 10)
+	resp := jsonMap{
+		"node":      node,
+		"ancestors": ancestors,
+		"siblings":  siblingSummaries,
+	}
+	if preset == "summary" {
+		return resp, nil
+	}
+
+	// preset=work → structured memory (no execution_log); preset=memory/full → include execution_log
+	var memory jsonMap
+	if preset == "full" {
+		memory, err = a.getNodeMemory(ctx, nodeID) // full: includes execution_log
+	} else {
+		memory, err = a.getNodeMemoryStructured(ctx, nodeID) // work/memory: excludes execution_log
+	}
 	if err != nil {
 		return nil, err
 	}
-	events, err := a.listEventsScoped(ctx, taskID, nodeID, false, "", "", 10, eventListOptions{})
-	if err != nil {
-		return nil, err
-	}
-	artifacts, err := a.listArtifacts(ctx, taskID, &nodeID)
-	if err != nil {
-		return nil, err
-	}
+	resp["memory"] = memory
+
 	var stageSummary jsonMap
 	stageNodeID := asString(node["stage_node_id"])
 	if stageNodeID != "" {
 		stage, _ := a.findNode(ctx, stageNodeID, false)
-		stageMemory, _ := a.getStageMemory(ctx, stageNodeID)
-		stageSummary = jsonMap{
-			"stage":  stage,
-			"memory": stageMemory,
+		stageSummary = jsonMap{"stage": stage}
+		if preset == "work" || preset == "memory" || preset == "full" {
+			stageMemory, _ := a.getStageMemory(ctx, stageNodeID)
+			stageSummary["memory"] = stageMemory
 		}
 	}
-	latestResultPayload := map[string]any{}
-	if len(runs) > 0 {
-		if structured := asAnyMap(runs[0]["structured_result"]); structured != nil {
-			latestResultPayload = structured
-		}
+	resp["stage_summary"] = stageSummary
+
+	if preset == "memory" || preset == "full" {
+		taskMemory, _ := a.getTaskMemory(ctx, taskID)
+		resp["task"] = task
+		resp["task_memory"] = taskMemory
 	}
-	return jsonMap{
-		"task":                  task,
-		"task_memory":           taskMemory,
-		"node":                  node,
-		"memory":                memory,
-		"ancestors":             ancestors,
-		"siblings":              siblingSummaries,
-		"recent_runs":           runs,
-		"latest_result_payload": latestResultPayload,
-		"recent_events":         events["items"],
-		"artifacts":             artifacts,
-		"stage_summary":         stageSummary,
-	}, nil
+
+	if preset == "work" || preset == "full" {
+		runs, err := a.listNodeRuns(ctx, nodeID, 10)
+		if err != nil {
+			return nil, err
+		}
+		events, err := a.listEventsScoped(ctx, taskID, nodeID, false, "", "", 10, eventListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		artifacts, err := a.listArtifacts(ctx, taskID, &nodeID)
+		if err != nil {
+			return nil, err
+		}
+		latestResultPayload := map[string]any{}
+		if len(runs) > 0 {
+			if structured := asAnyMap(runs[0]["structured_result"]); structured != nil {
+				latestResultPayload = structured
+			}
+		}
+		resp["recent_runs"] = runs
+		resp["latest_result_payload"] = latestResultPayload
+		resp["recent_events"] = events["items"]
+		resp["artifacts"] = artifacts
+	}
+	return resp, nil
 }
 
-func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeListOptions, eventOpts eventListOptions) (jsonMap, error) {
+func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeListOptions, eventOpts eventListOptions, resumeOpts resumeOptions) (jsonMap, error) {
 	task, err := a.getTask(ctx, taskID, false)
 	if err != nil {
 		return nil, err
@@ -267,38 +276,83 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 		currentStage, _ = a.findNode(ctx, currentStageNodeID, false)
 		currentStageMemory, _ = a.getStageMemory(ctx, currentStageNodeID)
 	}
-	focusNodes, nextNode, err := a.buildFocusNodes(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	if nodeOpts.ViewMode != "" || nodeOpts.FilterMode != "" || len(nodeOpts.Statuses) > 0 || len(nodeOpts.Kinds) > 0 || nodeOpts.Query != "" || nodeOpts.Depth != nil || nodeOpts.MaxDepth != nil {
+	taskMemorySummary := trimTaskMemoryForResume(taskMemory)
+	currentStageMemorySummary := trimStageMemoryForResume(currentStageMemory)
+
+	useFilteredTree := nodeOpts.ViewMode != "" ||
+		nodeOpts.FilterMode != "" ||
+		len(nodeOpts.Statuses) > 0 ||
+		len(nodeOpts.Kinds) > 0 ||
+		nodeOpts.Query != "" ||
+		nodeOpts.Depth != nil ||
+		nodeOpts.MaxDepth != nil ||
+		nodeOpts.ParentNodeID != "" ||
+		nodeOpts.SubtreeRootNodeID != "" ||
+		nodeOpts.MaxRelativeDepth != nil ||
+		nodeOpts.HasChildren != nil ||
+		nodeOpts.Limit > 0 ||
+		nodeOpts.Cursor != "" ||
+		nodeOpts.SortBy != "" ||
+		nodeOpts.SortOrder != "" ||
+		nodeOpts.IncludeHidden
+
+	var focusNodes []jsonMap
+	var nextNode jsonMap
+	treeHasMore := false
+	var treeCursor any
+
+	if useFilteredTree {
+		// When filtered tree is requested, skip building full focus tree.
+		// Only load nodes list for nextNode computation (needed for recommended_action).
 		filteredNodesWrap, err := a.listNodesWithOptions(ctx, taskID, nodeOpts)
 		if err != nil {
 			return nil, err
 		}
-		if items := workspaceAsItems(filteredNodesWrap["items"]); len(items) > 0 {
-			focusNodes = items
+		focusNodes = workspaceAsItems(filteredNodesWrap["items"])
+		treeHasMore, _ = filteredNodesWrap["has_more"].(bool)
+		treeCursor = filteredNodesWrap["next_cursor"]
+		// Lightweight nextNode: load nodes once, find next executable in-memory
+		allNodes, err := a.listNodes(ctx, taskID)
+		if err != nil {
+			return nil, err
+		}
+		nextNode = findNextExecutableFromNodes(allNodes, currentStageNodeID)
+	} else {
+		// Default path: build focus tree + nextNode together (single listNodes call)
+		var err2 error
+		focusNodes, nextNode, err2 = a.buildFocusNodes(ctx, taskID)
+		if err2 != nil {
+			return nil, err2
 		}
 	}
 	remaining, err := a.getRemaining(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
-	eventFallback := 5
-	if taskStatus := asString(task["status"]); taskStatus == "done" || taskStatus == "canceled" {
-		eventFallback = 3
+	events := jsonMap{"items": []jsonMap{}, "next_cursor": nil}
+	runs := []jsonMap{}
+	artifacts := []jsonMap{}
+	if resumeOpts.IncludeEvents {
+		eventFallback := 5
+		if taskStatus := asString(task["status"]); taskStatus == "done" || taskStatus == "canceled" {
+			eventFallback = 3
+		}
+		events, err = a.listEventsScoped(ctx, taskID, "", false, eventOpts.Before, eventOpts.After, limitWithFallback(eventOpts.Limit, eventFallback), eventOpts)
+		if err != nil {
+			return nil, err
+		}
 	}
-	events, err := a.listEventsScoped(ctx, taskID, "", false, eventOpts.Before, eventOpts.After, limitWithFallback(eventOpts.Limit, eventFallback), eventOpts)
-	if err != nil {
-		return nil, err
+	if resumeOpts.IncludeRuns {
+		runs, err = a.listTaskRuns(ctx, taskID, 5)
+		if err != nil {
+			return nil, err
+		}
 	}
-	runs, err := a.listTaskRuns(ctx, taskID, 5)
-	if err != nil {
-		return nil, err
-	}
-	artifacts, err := a.listArtifacts(ctx, taskID, nil)
-	if err != nil {
-		return nil, err
+	if resumeOpts.IncludeArtifacts {
+		artifacts, err = a.listArtifacts(ctx, taskID, nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	debug := jsonMap{
 		"used_stage":          currentStageNodeID != "",
@@ -309,7 +363,7 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 		"detail_fallback":     len(focusNodes) == 0,
 	}
 	var nextCtx any
-	if nextNode != nil {
+	if resumeOpts.IncludeNextNodeContext && nextNode != nil {
 		nextCtx, err = a.getResumeContext(ctx, taskID, asString(nextNode["id"]), 10)
 		if err != nil {
 			return nil, err
@@ -348,21 +402,29 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 	}
 
 	resp := jsonMap{
-		"task":                 trimTaskForResume(task),
-		"task_memory":          trimTaskMemoryForResume(taskMemory),
-		"current_stage":        trimStageForResume(currentStage),
-		"current_stage_memory": currentStageMemory,
-		"tree":                 focusNodes,
-		"tree_has_more":        false,
-		"tree_cursor":          nil,
-		"remaining":            remaining,
-		"recent_events":        events["items"],
-		"events_cursor":        events["next_cursor"],
-		"recent_runs":          runs,
-		"artifacts":            artifacts,
-		"next_node":            nextCtx,
-		"recommended_action":   recommendedAction,
-		"debug":                debug,
+		"task":                  trimTaskForResume(task),
+		"task_memory_summary":   taskMemorySummary,
+		"current_stage":         trimStageForResume(currentStage),
+		"current_stage_summary": trimStageForResume(currentStage),
+		"tree":                  focusNodes,
+		"tree_has_more":         treeHasMore,
+		"tree_cursor":           treeCursor,
+		"remaining":             remaining,
+		"recent_events":         events["items"],
+		"events_cursor":         events["next_cursor"],
+		"recent_runs":           runs,
+		"artifacts":             artifacts,
+		"next_node":             nextCtx,
+		"next_node_summary":     buildNodeSummary(nextNode),
+		"recommended_action":    recommendedAction,
+		"debug":                 debug,
+	}
+	if resumeOpts.IncludeTaskMemory {
+		resp["task_memory"] = taskMemory
+	}
+	if resumeOpts.IncludeStageMemory {
+		resp["current_stage_memory"] = currentStageMemory
+		resp["current_stage_memory_summary"] = currentStageMemorySummary
 	}
 	if currentStage != nil && stageLooksCompleted(currentStage) {
 		resp["pr_suggestion"] = buildPRSuggestion(task, currentStage)
@@ -375,13 +437,18 @@ func (a *App) buildResumeV2(ctx context.Context, taskID string, nodeOpts nodeLis
 		tree := make([]jsonMap, 0, len(nodes))
 		for _, node := range nodes {
 			tree = append(tree, jsonMap{
-				"node_id":       node["id"],
-				"path":          node["path"],
-				"title":         node["title"],
-				"status":        node["status"],
-				"progress":      node["progress"],
-				"kind":          node["kind"],
-				"stage_node_id": node["stage_node_id"],
+				"node_id":        node["id"],
+				"parent_node_id": node["parent_node_id"],
+				"path":           node["path"],
+				"title":          node["title"],
+				"status":         node["status"],
+				"progress":       node["progress"],
+				"kind":           node["kind"],
+				"role":           node["role"],
+				"depth":          node["depth"],
+				"estimate":       node["estimate"],
+				"has_children":   node["has_children"],
+				"stage_node_id":  node["stage_node_id"],
 			})
 		}
 		resp["full_tree"] = tree
@@ -428,10 +495,14 @@ func (a *App) buildParallelAlternatives(ctx context.Context, taskID string, next
 			continue
 		}
 		candidates = append(candidates, jsonMap{
-			"node_id": id,
-			"path":    asString(node["path"]),
-			"title":   asString(node["title"]),
-			"status":  status,
+			"node_id":        id,
+			"parent_node_id": node["parent_node_id"],
+			"path":           asString(node["path"]),
+			"title":          asString(node["title"]),
+			"status":         status,
+			"kind":           node["kind"],
+			"role":           node["role"],
+			"depth":          node["depth"],
 		})
 		if len(candidates) >= 3 {
 			break
@@ -442,12 +513,8 @@ func (a *App) buildParallelAlternatives(ctx context.Context, taskID string, next
 
 // dependsMet checks if all dependencies of a node are in "done" status.
 func dependsMet(node jsonMap, nodesByID map[string]jsonMap) bool {
-	raw := asString(node["depends_on_json"])
-	if raw == "" || raw == "[]" {
-		return true
-	}
-	var deps []string
-	if err := json.Unmarshal([]byte(raw), &deps); err != nil {
+	deps := stringSliceFromAny(node["depends_on"])
+	if len(deps) == 0 {
 		return true
 	}
 	for _, depID := range deps {
@@ -524,6 +591,7 @@ func trimTaskMemoryForResume(mem jsonMap) jsonMap {
 	}
 	return jsonMap{
 		"task_id":      mem["task_id"],
+		"summary":      mem["summary_text"],
 		"summary_text": mem["summary_text"],
 		"decisions":    mem["decisions"],
 		"next_actions": mem["next_actions"],
@@ -531,6 +599,23 @@ func trimTaskMemoryForResume(mem jsonMap) jsonMap {
 		"blockers":     mem["blockers"],
 		"version":      mem["version"],
 		"updated_at":   mem["updated_at"],
+	}
+}
+
+func trimStageMemoryForResume(mem jsonMap) jsonMap {
+	if mem == nil {
+		return nil
+	}
+	return jsonMap{
+		"stage_node_id": mem["stage_node_id"],
+		"summary":       mem["summary_text"],
+		"summary_text":  mem["summary_text"],
+		"decisions":     mem["decisions"],
+		"next_actions":  mem["next_actions"],
+		"risks":         mem["risks"],
+		"blockers":      mem["blockers"],
+		"version":       mem["version"],
+		"updated_at":    mem["updated_at"],
 	}
 }
 

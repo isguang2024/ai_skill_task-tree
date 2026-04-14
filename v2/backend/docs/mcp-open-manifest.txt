@@ -1,12 +1,12 @@
-task_tree_resume - 根据 task_id 返回完整 resume 包与下一个可执行节点。
+task_tree_resume - 根据 task_id 返回轻量 resume 包与推荐下一步；支持 include=events,runs,artifacts,next_node_context,task_memory,stage_memory，并支持 parent_node_id/subtree_root_node_id/max_relative_depth 等树过滤参数。
 task_tree_list_tasks - 列出任务，可按状态、关键词或项目过滤。
 task_tree_list_projects - 列出项目，可按关键词过滤。
 task_tree_get_project - 读取单个项目详情。
 task_tree_create_project - 创建项目，可指定是否为默认项目。
 task_tree_update_project - 更新项目名称、key、描述或默认项状态。
 task_tree_delete_project - 删除项目。
-task_tree_project_overview - 读取项目摘要与项目下任务列表。
-task_tree_get_task - 获取单个任务详情。
+task_tree_project_overview - 读取项目摘要与项目下任务列表，推荐 summary_with_stats 读法。
+task_tree_get_task - 获取单个任务详情；默认不附带树，只有 include_tree=true 才显式返回任务树。
 task_tree_create_task - 创建任务；可选一次性附带初始节点树，支持多层 children。
 task_tree_update_task - 更新任务标题、task_key 或 goal。
 task_tree_create_node - 在指定任务下创建节点。
@@ -16,12 +16,14 @@ task_tree_batch_create_stages - 批量创建阶段节点（事务原子）。
 task_tree_activate_stage - 切换任务当前激活阶段。
 task_tree_start_run - 为节点创建一次新的执行 Run。
 task_tree_finish_run - 结束一次运行中的 Run。
-task_tree_get_run - 读取单个 Run 详情及其日志。
-task_tree_list_node_runs - 列出某个节点下的 Run 历史。
+task_tree_get_run - 读取单个 Run 详情；默认不带日志，include_logs=true 时返回完整日志流。
+task_tree_list_node_runs - 列出某个节点下的 Run 历史，默认返回 summary + cursor。
 task_tree_append_run_log - 为指定 Run 追加一条日志。
-task_tree_get_node_context - 读取节点上下文聚合视图，包含 memory、runs、artifacts 等。
-task_tree_list_nodes - 列出某个任务下的节点，支持筛选、排序、分页和视图模式。
+task_tree_get_node_context - 读取节点上下文聚合视图，支持 preset=summary/memory/work/full。
+task_tree_list_nodes - 列出某个任务下的节点，默认返回 summary，支持筛选、排序、分页、children 与 subtree 展开。
 task_tree_list_nodes_summary - 轻量节点读取，仅返回高价值摘要字段。
+task_tree_list_children - 显式读取某个父节点的直接 children，默认只返回 summary 字段。
+task_tree_list_subtree_summary - 显式读取某个子树根及其后代摘要，可限制相对子树根的深度。
 task_tree_focus_nodes - 聚焦读取，仅返回可执行节点及其祖先链。
 task_tree_update_node - 更新节点标题、instruction、验收标准、estimate 或 sort_order。
 task_tree_reorder_nodes - 批量重排同级节点顺序。
@@ -32,10 +34,11 @@ task_tree_complete - 完成节点。
 task_tree_next_node - 获取当前任务中推荐的下一个可执行节点（含 alternatives）。
 task_tree_block_node - 将节点标记为阻塞。
 task_tree_claim - 领取节点 lease。
+task_tree_claim_and_start_run - 领取节点并自动创建 Run，减少一次往返。
 task_tree_release - 释放节点 lease。
 task_tree_retype_node - 把无子节点的 group 节点转回 leaf 执行节点。
 task_tree_transition_task - 批量流转任务状态，支持 pause、reopen、cancel。
-task_tree_transition_node - 流转叶子节点状态，支持 pause、reopen、cancel、unblock。
+task_tree_transition_node - 流转叶子节点状态，支持 block、pause、reopen、cancel、unblock。
 task_tree_get_remaining - 读取任务剩余节点、阻塞数、暂停数和剩余估时。
 task_tree_tree_view - 输出任务树文本视图（缩进树，支持按阶段过滤和仅可执行筛选）。
 task_tree_import_plan - 导入 Markdown/YAML/JSON 计划，支持 dry-run 与 apply。
@@ -43,7 +46,7 @@ task_tree_get_task_context - 读取任务上下文快照（architecture_decision
 task_tree_patch_task_context - 更新任务上下文快照字段。
 task_tree_get_resume_context - 读取某个节点的 resume 上下文，包括近期事件。
 task_tree_list_events - 列出任务或节点事件流。
-task_tree_list_artifacts - 列出任务或节点的产物。
+task_tree_list_artifacts - 列出任务或节点的产物，支持 view_mode=summary/detail 与 cursor。
 task_tree_create_artifact - 创建链接型产物记录。
 task_tree_upload_artifact - 以 base64 内容上传文件产物，便于 MCP 客户端调用。
 task_tree_delete_task - 将任务移入回收站。
@@ -51,7 +54,7 @@ task_tree_restore_task - 恢复回收站中的任务。
 task_tree_hard_delete_task - 彻底删除已进入回收站的任务。
 task_tree_empty_trash - 清空回收站。
 task_tree_sweep_leases - 清理过期 lease。
-task_tree_search - 搜索任务和节点。
+task_tree_search - 搜索任务和节点（已废弃，内部转发到 smart_search）。
 task_tree_smart_search - 全文检索任务、节点和 Memory（FTS5 + BM25）。
 task_tree_work_items - 获取当前可执行 work items。
 task_tree.batch_create_nodes - `task_tree_batch_create_nodes` 的短别名。

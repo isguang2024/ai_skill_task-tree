@@ -47,15 +47,23 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 	if asString(node["task_id"]) != taskID {
 		return nil, &appError{Code: 400, Msg: "node does not belong to task"}
 	}
-	ancestors := []jsonMap{}
-	parentID := asString(node["parent_node_id"])
-	for parentID != "" {
-		parent, err := a.findNode(ctx, parentID, false)
-		if err != nil {
-			break
-		}
-		ancestors = append([]jsonMap{{"node_id": parent["id"], "path": parent["path"], "title": parent["title"]}}, ancestors...)
-		parentID = asString(parent["parent_node_id"])
+	// Batch-fetch ancestor chain using recursive CTE (replaces N+1 findNode loop)
+	ancestorChain, err := a.fetchAncestorChain(ctx, asString(node["parent_node_id"]))
+	if err != nil {
+		return nil, err
+	}
+	ancestors := make([]jsonMap, 0, len(ancestorChain))
+	for _, parent := range ancestorChain {
+		ancestors = append(ancestors, jsonMap{
+			"node_id":        parent["id"],
+			"parent_node_id": parent["parent_node_id"],
+			"path":           parent["path"],
+			"title":          parent["title"],
+			"status":         parent["status"],
+			"kind":           parent["kind"],
+			"role":           parent["role"],
+			"depth":          parent["depth"],
+		})
 	}
 	rows, err := a.queryContext(ctx, `SELECT type, message, created_at, actor_type, actor_id FROM events WHERE node_id = ? ORDER BY created_at DESC LIMIT ?`, nodeID, eventLimit)
 	if err != nil {
@@ -66,7 +74,7 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 		return nil, err
 	}
 	parentMatch := asString(node["parent_node_id"])
-	rows, err = a.queryContext(ctx, `SELECT id, path, title, status, progress FROM nodes WHERE task_id = ? AND id != ? AND deleted_at IS NULL ORDER BY sort_order, created_at`, taskID, nodeID)
+	rows, err = a.queryContext(ctx, `SELECT id, parent_node_id, path, title, status, progress FROM nodes WHERE task_id = ? AND id != ? AND deleted_at IS NULL AND COALESCE(parent_node_id, '') = ? ORDER BY sort_order, created_at`, taskID, nodeID, parentMatch)
 	if err != nil {
 		return nil, err
 	}
@@ -76,16 +84,24 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 	}
 	siblings := []jsonMap{}
 	for _, item := range siblingsAll {
-		if asString(item["parent_node_id"]) == parentMatch {
-			siblings = append(siblings, jsonMap{"node_id": item["id"], "path": item["path"], "title": item["title"], "status": item["status"], "progress": item["progress"]})
-		}
+		siblings = append(siblings, jsonMap{
+			"node_id":        item["id"],
+			"parent_node_id": item["parent_node_id"],
+			"path":           item["path"],
+			"title":          item["title"],
+			"status":         item["status"],
+			"progress":       item["progress"],
+			"kind":           item["kind"],
+			"role":           item["role"],
+			"depth":          item["depth"],
+		})
 	}
 	remaining, err := a.getRemaining(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
-	// Fetch node memory (includes execution_log)
-	memory, _ := a.getNodeMemory(ctx, nodeID)
+	// Fetch node memory without execution_log (structured level)
+	memory, _ := a.getNodeMemoryStructured(ctx, nodeID)
 	// Fetch recent runs
 	runs, _ := a.listNodeRuns(ctx, nodeID, 5)
 	latestResultPayload := map[string]any{}
@@ -117,7 +133,8 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 			"title":               node["title"],
 			"instruction":         node["instruction"],
 			"acceptance_criteria": node["acceptance_criteria"],
-			"depends_on_json":     node["depends_on_json"],
+			"depends_on":          stringSliceFromAny(node["depends_on"]),
+			"depends_on_count":    len(stringSliceFromAny(node["depends_on"])),
 			"status":              node["status"],
 			"result":              node["result"],
 			"progress":            node["progress"],
@@ -135,12 +152,34 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 	}, nil
 }
 
-func (a *App) resumeTask(ctx context.Context, taskID string) (jsonMap, error) {
-	return a.resumeTaskWithOptions(ctx, taskID, nodeListOptions{}, eventListOptions{})
+// fetchAncestorChain returns ordered ancestors (root → immediate parent) using a recursive CTE.
+// This replaces the N+1 loop of findNode calls for walking the parent chain.
+func (a *App) fetchAncestorChain(ctx context.Context, startParentID string) ([]jsonMap, error) {
+	if startParentID == "" {
+		return []jsonMap{}, nil
+	}
+	rows, err := a.queryContext(ctx, `WITH RECURSIVE chain(nid) AS (
+		VALUES(?)
+		UNION ALL
+		SELECT n.parent_node_id FROM nodes n JOIN chain c ON n.id = c.nid
+		WHERE n.parent_node_id IS NOT NULL AND n.parent_node_id != '' AND n.deleted_at IS NULL
+	)
+	SELECT n.id, n.parent_node_id, n.path, n.title, n.status, n.depth
+	FROM chain c JOIN nodes n ON n.id = c.nid
+	WHERE n.deleted_at IS NULL
+	ORDER BY n.depth`, startParentID)
+	if err != nil {
+		return nil, err
+	}
+	return scanRows(rows)
 }
 
-func (a *App) resumeTaskWithOptions(ctx context.Context, taskID string, nodeOpts nodeListOptions, eventOpts eventListOptions) (jsonMap, error) {
-	return a.buildResumeV2(ctx, taskID, nodeOpts, eventOpts)
+func (a *App) resumeTask(ctx context.Context, taskID string) (jsonMap, error) {
+	return a.resumeTaskWithOptions(ctx, taskID, nodeListOptions{}, eventListOptions{}, resumeOptions{})
+}
+
+func (a *App) resumeTaskWithOptions(ctx context.Context, taskID string, nodeOpts nodeListOptions, eventOpts eventListOptions, opts resumeOptions) (jsonMap, error) {
+	return a.buildResumeV2(ctx, taskID, nodeOpts, eventOpts, opts)
 }
 
 func limitWithFallback(limit, fallback int) int {
@@ -148,6 +187,38 @@ func limitWithFallback(limit, fallback int) int {
 		return fallback
 	}
 	return limit
+}
+
+// findNextExecutableFromNodes finds the next executable node from an already-loaded node list.
+// This is the same logic as buildFocusNodes but without building the focus tree.
+func findNextExecutableFromNodes(nodes []jsonMap, currentStageNodeID string) jsonMap {
+	ordered := orderedExecutableLeaves(nodes)
+	nodesByID := make(map[string]jsonMap, len(nodes))
+	for _, n := range nodes {
+		nodesByID[asString(n["id"])] = n
+	}
+	for _, node := range ordered {
+		if currentStageNodeID != "" && asString(node["stage_node_id"]) != currentStageNodeID {
+			continue
+		}
+		if asString(node["status"]) == "running" {
+			return node
+		}
+	}
+	for _, node := range ordered {
+		if currentStageNodeID != "" && asString(node["stage_node_id"]) != currentStageNodeID {
+			continue
+		}
+		if asString(node["status"]) == "ready" && dependsMet(node, nodesByID) {
+			return node
+		}
+	}
+	for _, node := range ordered {
+		if (asString(node["status"]) == "running" || asString(node["status"]) == "ready") && dependsMet(node, nodesByID) {
+			return node
+		}
+	}
+	return nil
 }
 
 func orderedExecutableLeaves(nodes []jsonMap) []jsonMap {
@@ -239,6 +310,59 @@ func (a *App) search(ctx context.Context, q, kind string, limit int) (jsonMap, e
 	if strings.TrimSpace(q) == "" {
 		return result, nil
 	}
+	searchTasks := kind == "" || kind == "all" || kind == "tasks"
+	searchNodes := kind == "" || kind == "all" || kind == "nodes"
+	// Determine FTS5 scope
+	scope := ""
+	if searchTasks && !searchNodes {
+		scope = "task"
+	} else if searchNodes && !searchTasks {
+		scope = "node"
+	}
+	// Use FTS5 full-text search to find matching entity IDs
+	searchResult, err := a.smartSearch(ctx, q, scope, "", limit*2)
+	if err != nil {
+		// FTS5 unavailable — fall back to LIKE search
+		return a.searchLike(ctx, q, kind, limit)
+	}
+	items := workspaceAsItems(searchResult["items"])
+	taskIDs := make([]any, 0, len(items))
+	nodeIDs := make([]any, 0, len(items))
+	for _, item := range items {
+		entityType := asString(item["entity_type"])
+		entityID := asString(item["entity_id"])
+		if entityType == "task" && searchTasks && len(taskIDs) < limit {
+			taskIDs = append(taskIDs, entityID)
+		} else if entityType == "node" && searchNodes && len(nodeIDs) < limit {
+			nodeIDs = append(nodeIDs, entityID)
+		}
+	}
+	// Batch fetch full task objects
+	if len(taskIDs) > 0 {
+		rows, err := a.queryContext(ctx, `SELECT * FROM tasks WHERE id IN (`+placeholders(len(taskIDs))+`) AND deleted_at IS NULL ORDER BY updated_at DESC`, taskIDs...)
+		if err == nil {
+			tasks, _ := scanRows(rows)
+			if tasks != nil {
+				result["tasks"] = tasks
+			}
+		}
+	}
+	// Batch fetch full node objects
+	if len(nodeIDs) > 0 {
+		rows, err := a.queryContext(ctx, `SELECT n.*, t.title AS task_title FROM nodes n JOIN tasks t ON t.id = n.task_id WHERE n.id IN (`+placeholders(len(nodeIDs))+`) AND n.deleted_at IS NULL AND t.deleted_at IS NULL ORDER BY n.updated_at DESC`, nodeIDs...)
+		if err == nil {
+			nodes, _ := scanRows(rows)
+			if nodes != nil {
+				result["nodes"] = nodes
+			}
+		}
+	}
+	return result, nil
+}
+
+// searchLike is the legacy LIKE-based search fallback when FTS5 is unavailable.
+func (a *App) searchLike(ctx context.Context, q, kind string, limit int) (jsonMap, error) {
+	result := jsonMap{"tasks": []jsonMap{}, "nodes": []jsonMap{}}
 	like := buildLikePattern(q)
 	if kind == "" || kind == "all" || kind == "tasks" {
 		rows, err := a.queryContext(ctx, `SELECT * FROM tasks WHERE deleted_at IS NULL AND (title LIKE ? ESCAPE '\' OR goal LIKE ? ESCAPE '\') ORDER BY updated_at DESC LIMIT ?`, like, like, limit)
@@ -405,18 +529,62 @@ func (a *App) descendantNodeIDs(ctx context.Context, taskID, nodeID string) ([]s
 }
 
 func (a *App) listArtifacts(ctx context.Context, taskID string, nodeID *string) ([]jsonMap, error) {
-	query := `SELECT * FROM artifacts WHERE task_id = ?`
+	result, err := a.listArtifactsWithOptions(ctx, taskID, nodeID, artifactListOptions{ViewMode: "detail", Limit: 100})
+	if err != nil {
+		return nil, err
+	}
+	return workspaceAsItems(result["items"]), nil
+}
+
+func (a *App) listArtifactsWithOptions(ctx context.Context, taskID string, nodeID *string, opts artifactListOptions) (jsonMap, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 100
+	}
+	viewMode := strings.ToLower(strings.TrimSpace(opts.ViewMode))
+	if viewMode == "" {
+		viewMode = "summary"
+	}
+	selectFields := `id, task_id, node_id, run_id, kind, title, uri, created_at`
+	if viewMode == "detail" {
+		selectFields = `*`
+	}
+	query := `SELECT ` + selectFields + ` FROM artifacts WHERE task_id = ?`
 	args := []any{taskID}
 	if nodeID != nil && *nodeID != "" {
 		query += ` AND node_id = ?`
 		args = append(args, *nodeID)
 	}
-	query += ` ORDER BY created_at DESC`
+	if kind := strings.TrimSpace(opts.Kind); kind != "" {
+		query += ` AND kind = ?`
+		args = append(args, kind)
+	}
+	if opts.Cursor != "" {
+		parts := strings.SplitN(opts.Cursor, "|", 2)
+		if len(parts) == 2 {
+			query += ` AND (created_at < ? OR (created_at = ? AND id < ?))`
+			args = append(args, parts[0], parts[0], parts[1])
+		}
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, opts.Limit+1)
 	rows, err := a.queryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	return scanRows(rows)
+	items, err := scanRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	hasMore := len(items) > opts.Limit
+	if hasMore {
+		items = items[:opts.Limit]
+	}
+	nextCursor := any(nil)
+	if hasMore && len(items) > 0 {
+		last := items[len(items)-1]
+		nextCursor = asString(last["created_at"]) + "|" + asString(last["id"])
+	}
+	return jsonMap{"items": items, "has_more": hasMore, "next_cursor": nextCursor}, nil
 }
 
 func (a *App) createArtifact(ctx context.Context, taskID string, body artifactCreate) (jsonMap, error) {

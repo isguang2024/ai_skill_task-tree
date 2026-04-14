@@ -218,20 +218,12 @@ const summaryItems = computed(() => {
 // Load all projects with mini stats
 async function loadProjects() {
   loading.value = true
-  searchQuery.value = ''
   breadcrumb.value = [{ label: '任务总览', path: '/' }]
   try {
     const q = new URLSearchParams()
     if (searchQuery.value) q.set('q', searchQuery.value)
-    const list = await api('/projects?' + q)
-    // Fetch overview for each project in parallel
-    await Promise.all(list.map(async proj => {
-      try {
-        const ov = await api('/projects/' + proj.id + '/overview')
-        proj._summary = ov.summary || null
-      } catch { proj._summary = null }
-    }))
-    projects.value = list
+    q.set('view_mode', 'summary_with_stats')
+    projects.value = await api('/projects?' + q)
   } catch (e) {
     window.$message?.error('加载项目失败: ' + e.message)
   } finally {
@@ -273,20 +265,12 @@ async function loadProjectTasks() {
       if (statusFilter.value && t.status !== statusFilter.value) return false
       if (searchQuery.value) {
         const q = searchQuery.value.toLowerCase()
-        const text = [t.title, t.goal, t.task_key, t.memory?.summary, t.current_stage?.title].filter(Boolean).join(' ').toLowerCase()
+        const text = [t.title, t.task_key, t.memory?.summary, t.current_stage?.title, t.current_stage?.path].filter(Boolean).join(' ').toLowerCase()
         return text.includes(q)
       }
       return true
     })
-    tasks.value = list.map(t => ({
-      ...t,
-      _remaining: t.remaining_nodes || 0,
-      _blocked: t.blocked_nodes || 0,
-      _paused: t.paused_nodes || 0,
-      _nextPath: t.current_stage?.path || '',
-      _nextTitle: t.memory?.next_actions?.[0] || '',
-      _summary: t.memory?.summary || '',
-    }))
+    tasks.value = list.map(normalizeOverviewTask)
     summary.value = overview.summary || null
     breadcrumb.value = [
       { label: '任务总览', path: '/' },
@@ -402,10 +386,22 @@ async function lightRefresh() {
     if (!ov.tasks) return
     tasks.value = tasks.value.map(t => {
       const fresh = ov.tasks.find(f => f.id === t.id)
-      return fresh ? { ...t, ...fresh } : t
+      return fresh ? normalizeOverviewTask(fresh) : t
     })
     if (ov.summary) summary.value = ov.summary
   } catch {}
+}
+
+function normalizeOverviewTask(task) {
+  return {
+    ...task,
+    _remaining: task.remaining?.nodes || 0,
+    _blocked: task.remaining?.blocked || 0,
+    _paused: task.remaining?.paused || 0,
+    _nextPath: task.current_stage?.path || '',
+    _nextTitle: task.memory?.next_actions?.[0] || '',
+    _summary: task.memory?.summary || '',
+  }
 }
 
 function startAutoRefresh() {

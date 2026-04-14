@@ -1,4 +1,4 @@
-﻿package tasktree
+package tasktree
 
 import (
 	"context"
@@ -50,10 +50,103 @@ func aiToolDefinitions() []aiTool {
 		},
 		{
 			Name:        "get_task",
-			Description: "获取任务详情，包含完整的节点树（path、状态、进度、instruction）。分析任务前必先调用此接口。",
+			Description: "获取任务摘要。默认返回 task、remaining、recommended_action；只有 include_tree=true 时才附带节点树摘要。",
+			InputSchema: obj(map[string]any{
+				"task_id":      str("任务 ID，格式 tsk_xxx"),
+				"include_tree": map[string]any{"type": "boolean", "description": "是否附带节点树摘要，默认 false"},
+			}, "task_id"),
+		},
+		{
+			Name:        "resume_task",
+			Description: "获取任务摘要与当前聚焦树，适合作为 AI 第一步读取。",
 			InputSchema: obj(map[string]any{
 				"task_id": str("任务 ID，格式 tsk_xxx"),
+				"limit":   num("树节点返回数量（可选）"),
 			}, "task_id"),
+		},
+		{
+			Name:        "list_nodes_summary",
+			Description: "按 summary 模式列出节点，可按 focus/父节点/子树逐层展开。",
+			InputSchema: obj(map[string]any{
+				"task_id":              str("任务 ID"),
+				"filter_mode":          str("all/focus/active/blocked/done（可选）"),
+				"status":               arr("string", "状态过滤（可选）"),
+				"q":                    str("关键字过滤（可选）"),
+				"parent_node_id":       str("只看某个父节点的直接 children（可选）"),
+				"subtree_root_node_id": str("只看某个子树根及其后代（可选）"),
+				"max_relative_depth":   num("限制相对子树根的深度（可选）"),
+				"limit":                num("返回数量（可选）"),
+			}, "task_id"),
+		},
+		{
+			Name:        "list_node_children",
+			Description: "按父节点读取直接 children 摘要，适合逐层展开局部节点树。",
+			InputSchema: obj(map[string]any{
+				"task_id":    str("任务 ID"),
+				"node_id":    str("父节点 ID"),
+				"status":     arr("string", "状态过滤（可选）"),
+				"limit":      num("返回数量（可选）"),
+				"cursor":     str("分页游标（可选）"),
+				"sort_by":    str("排序字段（可选）"),
+				"sort_order": str("排序方向（可选）"),
+			}, "task_id", "node_id"),
+		},
+		{
+			Name:        "list_node_subtree_summary",
+			Description: "按子树根读取 summary 摘要，可限制相对子树根的深度。",
+			InputSchema: obj(map[string]any{
+				"task_id":            str("任务 ID"),
+				"root_node_id":       str("子树根节点 ID"),
+				"status":             arr("string", "状态过滤（可选）"),
+				"max_relative_depth": num("限制相对子树根的深度（可选）"),
+				"limit":              num("返回数量（可选）"),
+				"cursor":             str("分页游标（可选）"),
+				"sort_by":            str("排序字段（可选）"),
+				"sort_order":         str("排序方向（可选）"),
+			}, "task_id", "root_node_id"),
+		},
+		{
+			Name:        "get_node_context",
+			Description: "读取节点上下文，支持 summary/work/memory/full 预设。",
+			InputSchema: obj(map[string]any{
+				"node_id": str("节点 ID"),
+				"preset":  strEnum("上下文预设", "summary", "work", "memory", "full"),
+			}, "node_id"),
+		},
+		{
+			Name:        "claim_and_start_run",
+			Description: "领取节点并自动创建运行 Run，适合开始执行。",
+			InputSchema: obj(map[string]any{
+				"node_id":       str("节点 ID"),
+				"input_summary": str("本次执行摘要（可选）"),
+			}, "node_id"),
+		},
+		{
+			Name:        "batch_create_nodes",
+			Description: "批量创建多个节点。",
+			InputSchema: obj(map[string]any{
+				"task_id": str("任务 ID"),
+				"nodes":   arr("object", "节点对象数组，支持 title/instruction/parent_node_id/node_key/estimate"),
+			}, "task_id", "nodes"),
+		},
+		{
+			Name:        "import_plan",
+			Description: "导入 markdown/yaml 计划，可 dry-run 或 apply。",
+			InputSchema: obj(map[string]any{
+				"format": strEnum("格式", "markdown", "yaml", "json"),
+				"data":   str("计划内容"),
+				"apply":  map[string]any{"type": "boolean", "description": "是否直接落库"},
+			}, "data"),
+		},
+		{
+			Name:        "smart_search",
+			Description: "全文检索任务、节点和 Memory。",
+			InputSchema: obj(map[string]any{
+				"q":       str("搜索关键词"),
+				"scope":   strEnum("搜索范围（可选）", "all", "task", "node", "memory"),
+				"task_id": str("限定任务 ID（可选）"),
+				"limit":   num("返回数量（可选）"),
+			}, "q"),
 		},
 		{
 			Name:        "create_task",
@@ -146,6 +239,14 @@ func (a *App) executeAITool(ctx context.Context, name string, inputRaw json.RawM
 		}
 		return def
 	}
+	boolean := func(key string) bool {
+		v, ok := in[key]
+		if !ok {
+			return false
+		}
+		b, ok := v.(bool)
+		return ok && b
+	}
 
 	switch name {
 	case "list_tasks":
@@ -168,38 +269,109 @@ func (a *App) executeAITool(ctx context.Context, name string, inputRaw json.RawM
 
 	case "get_task":
 		taskID := str("task_id")
-		task, err := a.getTask(ctx, taskID, false)
+		resume, err := a.resumeTaskWithOptions(ctx, taskID, nodeListOptions{ViewMode: "summary", Limit: 20}, eventListOptions{}, resumeOptions{})
 		if err != nil {
 			return "get_task 失败: " + err.Error()
 		}
-		nodes, err := a.listNodes(ctx, taskID)
+		if boolean("include_tree") {
+			treeWrap, err := a.listNodesWithOptions(ctx, taskID, nodeListOptions{ViewMode: "summary", Limit: 50, SortBy: "path", SortOrder: "asc"})
+			if err != nil {
+				return "get_task 失败: " + err.Error()
+			}
+			resume["tree"] = treeWrap["items"]
+			resume["tree_cursor"] = treeWrap["next_cursor"]
+		} else {
+			resume["tree"] = []jsonMap{}
+			resume["tree_cursor"] = nil
+		}
+		return summarizeResumeForAI(resume)
+
+	case "resume_task":
+		taskID := str("task_id")
+		limit := int(flt("limit", 20))
+		resume, err := a.resumeTaskWithOptions(ctx, taskID, nodeListOptions{ViewMode: "summary", Limit: limit}, eventListOptions{}, resumeOptions{})
 		if err != nil {
-			return "listNodes 失败: " + err.Error()
+			return "resume_task 失败: " + err.Error()
 		}
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "任务：%s (%s)\n目标：%s\n状态：%s  进度：%v%%  剩余：%v\n\n节点列表（%d 条）：\n",
-			asString(task["title"]), taskID,
-			asString(task["goal"]),
-			asString(task["status"]), task["percent"], task["remaining_nodes"],
-			len(nodes))
-		for _, n := range nodes {
-			instr := asString(n["instruction"])
-			if len(instr) > 60 {
-				instr = instr[:60] + "..."
-			}
-			claimed := ""
-			if asString(n["claimed_by_id"]) != "" {
-				claimed = "  👤" + asString(n["claimed_by_id"])
-			}
-			sb.WriteString(fmt.Sprintf("  node_id:%s  path:%s  [%s] %s  %v%%%s\n",
-				asString(n["id"]), asString(n["path"]),
-				asString(n["status"]), asString(n["title"]),
-				int(asFloat(n["progress"])*100), claimed))
-			if instr != "" {
-				sb.WriteString(fmt.Sprintf("       → %s\n", instr))
+		return summarizeResumeForAI(resume)
+
+	case "list_nodes_summary":
+		taskID := str("task_id")
+		opts := nodeListOptions{
+			ViewMode:          "summary",
+			FilterMode:        str("filter_mode"),
+			Query:             str("q"),
+			ParentNodeID:      str("parent_node_id"),
+			SubtreeRootNodeID: str("subtree_root_node_id"),
+			Limit:             int(flt("limit", 50)),
+		}
+		if rawStatuses, ok := in["status"].([]any); ok {
+			for _, raw := range rawStatuses {
+				opts.Statuses = append(opts.Statuses, asString(raw))
 			}
 		}
-		return sb.String()
+		if _, ok := in["max_relative_depth"]; ok {
+			n := int(asFloat(in["max_relative_depth"]))
+			opts.MaxRelativeDepth = &n
+		}
+		result, err := a.listNodesWithOptions(ctx, taskID, opts)
+		if err != nil {
+			return "list_nodes_summary 失败: " + err.Error()
+		}
+		return summarizeNodeItemsForAI(workspaceAsItems(result["items"]), result["next_cursor"])
+
+	case "list_node_children":
+		taskID := str("task_id")
+		opts := nodeListOptions{
+			ViewMode:     "summary",
+			ParentNodeID: str("node_id"),
+			Limit:        int(flt("limit", 50)),
+			Cursor:       str("cursor"),
+			SortBy:       str("sort_by"),
+			SortOrder:    str("sort_order"),
+		}
+		if rawStatuses, ok := in["status"].([]any); ok {
+			for _, raw := range rawStatuses {
+				opts.Statuses = append(opts.Statuses, asString(raw))
+			}
+		}
+		result, err := a.listNodesWithOptions(ctx, taskID, opts)
+		if err != nil {
+			return "list_node_children 失败: " + err.Error()
+		}
+		return summarizeNodeItemsForAI(workspaceAsItems(result["items"]), result["next_cursor"])
+
+	case "list_node_subtree_summary":
+		taskID := str("task_id")
+		opts := nodeListOptions{
+			ViewMode:          "summary",
+			SubtreeRootNodeID: str("root_node_id"),
+			Limit:             int(flt("limit", 50)),
+			Cursor:            str("cursor"),
+			SortBy:            str("sort_by"),
+			SortOrder:         str("sort_order"),
+		}
+		if rawStatuses, ok := in["status"].([]any); ok {
+			for _, raw := range rawStatuses {
+				opts.Statuses = append(opts.Statuses, asString(raw))
+			}
+		}
+		if _, ok := in["max_relative_depth"]; ok {
+			n := int(asFloat(in["max_relative_depth"]))
+			opts.MaxRelativeDepth = &n
+		}
+		result, err := a.listNodesWithOptions(ctx, taskID, opts)
+		if err != nil {
+			return "list_node_subtree_summary 失败: " + err.Error()
+		}
+		return summarizeNodeItemsForAI(workspaceAsItems(result["items"]), result["next_cursor"])
+
+	case "get_node_context":
+		result, err := a.buildNodeContextWithOptions(ctx, str("node_id"), nodeContextOptions{Preset: str("preset")})
+		if err != nil {
+			return "get_node_context 失败: " + err.Error()
+		}
+		return summarizeNodeContextForAI(result)
 
 	case "create_task":
 		goal := str("goal")
@@ -250,6 +422,36 @@ func (a *App) executeAITool(ctx context.Context, name string, inputRaw json.RawM
 		return fmt.Sprintf("✅ 节点已创建：%s  路径:%s  ID:%s",
 			asString(item["title"]), asString(item["path"]), asString(item["id"]))
 
+	case "batch_create_nodes":
+		taskID := str("task_id")
+		rawNodes, _ := in["nodes"].([]any)
+		bodies := make([]nodeCreate, 0, len(rawNodes))
+		for _, raw := range rawNodes {
+			item, _ := raw.(map[string]any)
+			if item == nil {
+				continue
+			}
+			body := nodeCreate{Title: asString(item["title"])}
+			if v := strings.TrimSpace(asString(item["instruction"])); v != "" {
+				body.Instruction = &v
+			}
+			if v := strings.TrimSpace(asString(item["parent_node_id"])); v != "" {
+				body.ParentNodeID = &v
+			}
+			if v := strings.TrimSpace(asString(item["node_key"])); v != "" {
+				body.NodeKey = &v
+			}
+			if est := asFloat(item["estimate"]); est > 0 {
+				body.Estimate = &est
+			}
+			bodies = append(bodies, body)
+		}
+		items, err := a.batchCreateNodes(ctx, taskID, bodies)
+		if err != nil {
+			return "batch_create_nodes 失败: " + err.Error()
+		}
+		return fmt.Sprintf("✅ 已批量创建 %d 个节点", len(items))
+
 	case "update_node":
 		nodeID := str("node_id")
 		body := nodeUpdate{}
@@ -291,6 +493,17 @@ func (a *App) executeAITool(ctx context.Context, name string, inputRaw json.RawM
 			return "claim_node 失败: " + err.Error()
 		}
 		return fmt.Sprintf("✅ 节点已领取：%s  状态:%s", asString(item["title"]), asString(item["status"]))
+
+	case "claim_and_start_run":
+		inputSummary := nullableOptString(str("input_summary"))
+		item, err := a.claimAndStartRun(ctx, str("node_id"), claimStartBody{
+			Actor:        actor{Tool: strPtr("ai"), AgentID: strPtr("builtin-ai")},
+			InputSummary: inputSummary,
+		})
+		if err != nil {
+			return "claim_and_start_run 失败: " + err.Error()
+		}
+		return fmt.Sprintf("✅ 已领取并启动运行：node=%s run=%s", asString(item["node_id"]), asString(item["run_id"]))
 
 	case "progress_node":
 		nodeID := str("node_id")
@@ -343,8 +556,86 @@ func (a *App) executeAITool(ctx context.Context, name string, inputRaw json.RawM
 		}
 		return fmt.Sprintf("✅ 任务已删除（软删除）：%s", taskID)
 
+	case "import_plan":
+		apply := false
+		if v, ok := in["apply"].(bool); ok {
+			apply = v
+		}
+		item, err := a.importPlan(ctx, importPlanBody{
+			Format: str("format"),
+			Data:   str("data"),
+			Apply:  &apply,
+		})
+		if err != nil {
+			return "import_plan 失败: " + err.Error()
+		}
+		return summarizeMap(item)
+
+	case "smart_search":
+		item, err := a.smartSearch(ctx, str("q"), str("scope"), str("task_id"), int(flt("limit", 10)))
+		if err != nil {
+			return "smart_search 失败: " + err.Error()
+		}
+		return summarizeMap(item)
+
 	default:
 		return "未知工具: " + name
 	}
 }
 
+func nullableOptString(v string) *string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	return &v
+}
+
+func summarizeResumeForAI(resume jsonMap) string {
+	task := asAnyMap(resume["task"])
+	tree := workspaceAsItems(resume["tree"])
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "任务：%s (%s)\n状态：%s\n", asString(task["title"]), asString(task["id"]), asString(task["status"]))
+	if remaining := asAnyMap(resume["remaining"]); remaining != nil {
+		fmt.Fprintf(&sb, "剩余节点：%v  阻塞：%v  暂停：%v\n", remaining["remaining_nodes"], remaining["blocked_nodes"], remaining["paused_nodes"])
+	}
+	if action := asAnyMap(resume["recommended_action"]); action != nil {
+		fmt.Fprintf(&sb, "推荐动作：%s  node=%s\n", asString(action["action"]), asString(action["node_id"]))
+	}
+	if len(tree) > 0 || asString(resume["tree_cursor"]) != "" {
+		sb.WriteString("聚焦树：\n")
+		sb.WriteString(summarizeNodeItemsForAI(tree, resume["tree_cursor"]))
+	} else {
+		sb.WriteString("节点树：未加载（需要时传 include_tree=true 或再调用 list_nodes_summary）。")
+	}
+	return sb.String()
+}
+
+func summarizeNodeItemsForAI(items []jsonMap, nextCursor any) string {
+	if len(items) == 0 {
+		return "无节点。"
+	}
+	var sb strings.Builder
+	for _, item := range items {
+		fmt.Fprintf(&sb, "- %s [%s] %s (%s)\n", asString(item["path"]), asString(item["status"]), asString(item["title"]), asString(item["id"]))
+	}
+	if asString(nextCursor) != "" {
+		fmt.Fprintf(&sb, "next_cursor=%s\n", asString(nextCursor))
+	}
+	return sb.String()
+}
+
+func summarizeNodeContextForAI(ctxMap jsonMap) string {
+	node := asAnyMap(ctxMap["node"])
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "节点：%s (%s)\n路径：%s\n状态：%s\n", asString(node["title"]), asString(node["id"]), asString(node["path"]), asString(node["status"]))
+	if mem := asAnyMap(ctxMap["memory"]); mem != nil && asString(mem["summary_text"]) != "" {
+		fmt.Fprintf(&sb, "摘要：%s\n", asString(mem["summary_text"]))
+	}
+	if runs := workspaceAsItems(ctxMap["recent_runs"]); len(runs) > 0 {
+		fmt.Fprintf(&sb, "最近 Run：%d 条\n", len(runs))
+	}
+	if events := workspaceAsItems(ctxMap["recent_events"]); len(events) > 0 {
+		fmt.Fprintf(&sb, "最近事件：%d 条\n", len(events))
+	}
+	return sb.String()
+}

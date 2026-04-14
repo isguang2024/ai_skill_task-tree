@@ -2,23 +2,19 @@
 
 本版本（V2）是统一 `task-tree` 仓库中的一部分，默认运行在：
 
-- 前端工作台：`http://127.0.0.1:8880`
-- HTTP API：`http://127.0.0.1:8880/v1/...`
-- HTTP MCP：`http://127.0.0.1:8880/mcp`
-- 前端开发服务器：`http://127.0.0.1:5174/`
+| 入口 | 地址 |
+|------|------|
+| 前端工作台 / UI | `http://127.0.0.1:8880` |
+| HTTP API | `http://127.0.0.1:8880/v1/...` |
+| HTTP MCP | `http://127.0.0.1:8880/mcp` |
+| 前端开发服务器 | `http://127.0.0.1:5174/` |
 
-同一个后端 `serve` 进程同时提供：
-
-- 已构建前端静态资源
-- HTTP API
-- HTTP MCP
-
-开发态下前端可单独跑 `5174`；发布态下浏览器只访问后端 `8880`。
+同一个后端 `serve` 进程同时提供已构建前端静态资源、HTTP API 和 HTTP MCP。
 
 ## 项目结构
 
-```text
-task-tree/v2/           # 统一仓库中的 V2 版本
+```
+task-tree/v2/
   backend/              # Go 后端（模块根）
     cmd/task-tree-service/
     internal/tasktree/
@@ -28,9 +24,9 @@ task-tree/v2/           # 统一仓库中的 V2 版本
   frontend/             # Vue 3 前端
     src/
     dist/               # npm run build 产物
-  docs/                 # 项目级使用文档与变更记录
-  skill/                # V2 技能文档
-  task-tree-dxt/        # V2 DXT 代理与打包文件
+  docs/                 # 项目级使用文档
+  skill/                # AI 技能文档（面向 Claude Code / Codex）
+  task-tree-dxt/        # Claude Desktop DXT 代理包
   启动后端.bat
   启动前端_前端开发测试服务.bat
 ```
@@ -53,74 +49,70 @@ npm run dev
 ### 本地发布态
 
 ```powershell
-cd frontend
-npm run build
-
+cd frontend && npm run build
 cd ..\backend
 $env:TTS_ADDR="127.0.0.1:8880"
 go run ./cmd/task-tree-service serve
 ```
 
-然后浏览器访问 `http://127.0.0.1:8880`。
-
-不要直接双击 `frontend/dist/index.html`，这不是纯静态离线页；它依赖同源的 `/v1/...` 和 `/mcp`。
+浏览器访问 `http://127.0.0.1:8880`。不能直接打开 `frontend/dist/index.html`。
 
 ## 协作原则
 
-1. 本仓库所有文档、脚本、代理都应使用以下端口：
-   - 后端 / MCP：`8880`
-   - 前端 dev：`5174`
-2. 新增核心业务能力时，必须明确写清：
-   - 是否提供 HTTP API
-   - 是否提供 MCP 工具
-   - 如果暂时只提供 HTTP，要在文档里明确标注”HTTP only”
-3. 后端改动后运行 `go test ./...`，前端改动后运行 `npm run build`。
-4. 改动关键路径、端口、接口、DXT、技能、导航或使用方式时，顺手同步更新相关说明文件，保证文档始终和最新状态一致。
-5. **技能文件修改或新增 API/MCP 时，必须同步到全局技能文件夹：**
-   - 修改或新增 `skill/SKILL.md` 内容后，同时更新：
-     - `C:\Users\Administrator\.claude\skills\task-tree\SKILL.md`（Claude Code 全局）
-     - `C:\Users\Administrator\.codex\skills\task-tree\SKILL.md`（Codex 全局）
-   - **除 `SKILL.md` 外，`skill/docs/` 下的文档也必须同步**（至少包括）：
-     - `task-tree-api.md`
-     - `task-tree-best-practices.md`
-     - `task-tree-tools.md`
-     - 同步目标：
-       - `C:\Users\Administrator\.claude\skills\task-tree\docs\`
-       - `C:\Users\Administrator\.codex\skills\task-tree\docs\`
-   - 新增 HTTP 接口时在文档中说明，同步更新全局技能的”完整 HTTP API”部分
-   - 新增 MCP 工具时，同步更新全局技能的”完整工具清单”和”工具速查表”部分
+1. **端口固定**：后端/MCP 用 `8880`，前端 dev 用 `5174`
+2. **能力边界明确**：新增核心能力必须说明是否提供 HTTP API 和 MCP 工具；暂时只有 HTTP 的必须标注"HTTP only"
+3. **测试验证**：后端改动后 `go test ./...`，前端改动后 `npm run build`
+4. **文档同步**：修改 MCP 工具、默认规则、技能工作流或能力边界后，同步更新以下文件：
+   - `skill/SKILL.md` + `skill/docs/` 下的文档
+   - `docs/技能与MCP说明.md`
+   - `backend/docs/http-mcp-parity.md`
+   - `backend/docs/mcp-open-manifest.txt`
+5. **全局技能同步**：上述文件修改后，同步到全局技能目录：
+   - `C:\Users\Administrator\.claude\skills\task-tree\`（Claude Code）
+   - `C:\Users\Administrator\.codex\skills\task-tree\`（Codex）
+   - 包括 `SKILL.md` 和 `skill/docs/` 下的所有文档
 
-## V2 当前能力边界
+## 当前能力边界
 
-### 已同时提供 HTTP + MCP 的核心能力
+### 已有 HTTP + MCP
 
 - 项目：创建、读取、列表、更新、删除、概览
-- 任务：创建、读取、列表、更新、回收站、状态流转、`dry_run` 预演
+- 任务：创建（含 dry_run）、读取、列表、更新、回收站、状态流转、收尾总结
 - 阶段：列出、创建、批量创建、激活
-- 节点：创建、批量创建、读取、列表、摘要读取、focus 读取、更新、排序、移动、进度、完成、阻塞、claim、release、retype、状态流转
-- 上下文：remaining、resume、next-node、resume-context、task-context、events、search、work-items、tree-view、import-plan
-- 产物：列表、链接型产物、base64 上传
-- Run 执行层：start/list/get/finish/log 全量 MCP 对齐
-- 节点 context 读模型：MCP 已对齐
+- 节点：创建、批量创建、读取、列表、摘要/focus/children/subtree、更新、排序、移动、进度、完成、阻塞、claim/release、retype、状态流转
+- 上下文：resume、remaining、next-node、resume-context、task-context、node-context（preset 模式）
+- 产物：列表、链接型、base64 上传
+- Run：start/list/get/finish/log
+- 全局：search（FTS5）、smart-search、work-items、tree-view、import-plan
 
-### 当前以 HTTP 为主的能力
+### 当前仅 HTTP
 
-- Memory 原生 PATCH 能力：任务、阶段、节点 memory 的 manual_note/full patch（其中 `task_tree_patch_node_memory` 已有 MCP）
-- 部分 read-model 增强字段与前端展示细节
+- Task / Stage Memory 原生 PATCH 与 snapshot
+- Node Memory snapshot
 
-这部分已经有 HTTP 路由和前端接入，文档必须如实说明边界。
+### 后端性能特性
 
-## DXT / Skill 对应
+- 递归 CTE 祖先链查询（替代 N+1 循环）
+- 批量 Memory 查询（`WHERE IN` 替代逐条）
+- 条件 Focus 树构建（仅在需要时执行）
+- FTS5 全文搜索（BM25 排名）
+- 精确列选择（无 `SELECT *`）
 
-- Skill：`skill/SKILL.md`
-- DXT：`task-tree-dxt/`
-- DXT 代理必须指向：`http://127.0.0.1:8880/mcp`
+## DXT / Skill
 
-如果安装 Claude Desktop 扩展，应使用 `task-tree-dxt/task-tree.dxt`。
+- Skill 核心文档：`skill/SKILL.md`
+- DXT 目录：`task-tree-dxt/`
+- DXT 代理指向：`http://127.0.0.1:8880/mcp`
 
 ## 推荐文档
 
-- 项目总览：`docs/README.md`
-- 技能与 MCP：`docs/技能与MCP说明.md`
-- 本地启动与发布：`docs/本地启动与使用.md`
-- HTTP / MCP 边界：`backend/docs/http-mcp-parity.md`
+| 文档 | 内容 |
+|------|------|
+| `docs/README.md` | 项目文档总览 |
+| `docs/技能与MCP说明.md` | 技能与 MCP 接入指南 |
+| `docs/本地启动与使用.md` | 本地启动与使用 |
+| `backend/docs/http-mcp-parity.md` | HTTP / MCP 能力边界 |
+| `skill/SKILL.md` | AI 技能核心文档 |
+| `skill/docs/task-tree-tools.md` | MCP 工具完整参考 |
+| `skill/docs/task-tree-api.md` | HTTP API 参考 |
+| `skill/docs/task-tree-best-practices.md` | 最佳实践与决策指南 |

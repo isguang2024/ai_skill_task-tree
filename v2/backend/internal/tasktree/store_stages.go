@@ -56,16 +56,21 @@ func (a *App) listStages(ctx context.Context, taskID string) ([]jsonMap, error) 
 
 func buildStageSummary(item jsonMap) jsonMap {
 	return jsonMap{
-		"id":          item["id"],
-		"title":       item["title"],
-		"status":      item["status"],
-		"progress":    item["progress"],
-		"sort_order":  item["sort_order"],
-		"instruction": item["instruction"],
-		"node_key":    item["node_key"],
-		"kind":        item["kind"],
-		"role":        item["role"],
-		"estimate":    item["estimate"],
+		"id":             item["id"],
+		"parent_node_id": item["parent_node_id"],
+		"path":           item["path"],
+		"title":          item["title"],
+		"status":         item["status"],
+		"progress":       item["progress"],
+		"sort_order":     item["sort_order"],
+		"instruction":    item["instruction"],
+		"node_key":       item["node_key"],
+		"kind":           item["kind"],
+		"role":           item["role"],
+		"depth":          item["depth"],
+		"estimate":       item["estimate"],
+		"has_children":   item["has_children"],
+		"stage_node_id":  item["stage_node_id"],
 	}
 }
 
