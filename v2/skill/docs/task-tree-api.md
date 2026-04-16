@@ -124,7 +124,7 @@ Content-Type: application/json
 ### 恢复 / 导航 / 收尾
 
 ```
-GET    /v1/tasks/{id}/resume           # 恢复上下文（核心入口）
+GET    /v1/tasks/{id}/resume           # 恢复上下文（仅恢复现场）
 GET    /v1/tasks/{id}/remaining        # 剩余统计
 GET    /v1/tasks/{id}/next-node        # 推荐下一可执行节点
 GET    /v1/tasks/{id}/context          # 任务上下文快照
@@ -145,6 +145,14 @@ GET    /v1/tasks/{id}/events/stream    # SSE 事件流
 - `remaining` — 剩余统计
 - `recommended_action` — 推荐下一步
 - `next_node_summary` — 下一节点摘要
+
+**调用约束**：
+
+- `/resume` 只用于恢复工作现场，不是默认查询入口。
+- 已知 `node_id` 时，优先读取节点详情或节点上下文。
+- 只想知道下一步时，优先调 `/next-node`。
+- 只想看局部树时，优先调 `/nodes`、`focus_nodes` 对应能力。
+- 同一轮里对同一 `task_id` 默认最多一次 `/resume`，除非发生重大状态变化。
 
 **重上下文**（通过 `include` 显式请求，逗号分隔）：
 

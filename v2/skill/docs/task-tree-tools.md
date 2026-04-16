@@ -6,7 +6,7 @@
 
 | 我想... | 用这个工具 |
 |---------|-----------|
-| 恢复任务上下文 | `task_tree_resume` |
+| 恢复任务上下文（仅恢复现场） | `task_tree_resume` |
 | 看当前该做什么 | `task_tree_focus_nodes` / `task_tree_next_node` |
 | 看某个父节点的子节点 | `task_tree_list_nodes(parent_node_id=...)` |
 | 看某个子树 | `task_tree_list_nodes(subtree_root_node_id=..., max_relative_depth=...)` |
@@ -54,13 +54,15 @@
 
 | 工具 | 说明 | 关键参数 |
 |------|------|---------|
-| `task_tree_resume` | **核心入口**：轻量恢复包 | `task_id`，`include=events,runs,artifacts,next_node_context,task_memory,stage_memory`，支持全部树过滤参数 |
+| `task_tree_resume` | **恢复现场专用**：轻量恢复包 | `task_id`，`include=events,runs,artifacts,next_node_context,task_memory,stage_memory`，支持全部树过滤参数 |
 | `task_tree_next_node` | 推荐下一可执行节点 | `task_id`，返回 `node` + `alternatives` |
 | `task_tree_get_remaining` | 剩余统计 | `task_id`，返回剩余数/阻塞数/暂停数/剩余估时 |
 | `task_tree_get_task_context` | 任务上下文快照 | `task_id`，含 architecture_decisions/reference_files/context_doc_text |
 | `task_tree_patch_task_context` | 更新任务上下文快照 | `task_id`，支持部分更新 |
 | `task_tree_wrapup` | 写入任务收尾总结 | `task_id`，`summary`，`conclusions` 等 |
 | `task_tree_get_wrapup` | 读取任务收尾总结 | `task_id` |
+
+> `task_tree_resume` 只用于恢复工作现场。已知 `node_id` 时改用 `task_tree_get_node` / `task_tree_get_node_context`；只想找下一步时改用 `task_tree_next_node`；只想看可执行节点或局部树时改用 `task_tree_focus_nodes` / `task_tree_list_nodes` / `task_tree_work_items`。
 
 ## 阶段管理
 

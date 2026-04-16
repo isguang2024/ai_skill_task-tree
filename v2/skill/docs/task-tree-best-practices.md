@@ -4,12 +4,22 @@
 
 ## 核心原则
 
-### 1. 先摘要，再下钻
+### 1. 先判断是否真的需要 `resume`
 
-固定读取路径：
+`task_tree_resume` 只用于恢复工作现场，不是默认起手式。
+
+恢复现场时：
 
 ```
 resume → focus_nodes → get_node_context(summary) → 按需补 memory/work/runs/events
+```
+
+普通查询时：
+
+```
+已知 node_id → get_node / get_node_context
+只找下一步 → next_node
+只看局部树 → focus_nodes / list_nodes
 ```
 
 **不要**默认读整树、完整 context、完整 run 日志。每一层只在需要更多信息时才下钻。
@@ -31,8 +41,14 @@ resume → focus_nodes → get_node_context(summary) → 按需补 memory/work/r
 ## 渐进式读取决策树
 
 ```
-┌─ 我只是要恢复上下文？
+┌─ 我是不是处于恢复工作现场？
 │  → task_tree_resume
+│
+├─ 我已经知道 node_id？
+│  → task_tree_get_node / task_tree_get_node_context
+│
+├─ 我只是想知道下一步？
+│  → task_tree_next_node
 │
 ├─ 我不知道该看哪个节点？
 │  → task_tree_focus_nodes 或 task_tree_list_nodes_summary
@@ -149,7 +165,7 @@ resume → focus_nodes → get_node_context(summary) → 按需补 memory/work/r
 
 节点 complete 后：
 
-1. 先看 `resume` 或当前 focus/children/subtree
+1. 先看当前已有上下文；只有恢复现场时再 `resume`，否则优先 `next_node` / `focus` / `children` / `subtree`
 2. 在依赖已满足的 `ready` 节点中选最合理的下一步
 3. `recommended_action` 是建议而非强制指令
 4. 有多个 ready 时，按结构顺序和真实依赖判断
@@ -163,12 +179,18 @@ resume → focus_nodes → get_node_context(summary) → 按需补 memory/work/r
 
 | 做法 | 效果 |
 |------|------|
-| 先 `resume` 再按需下钻 | 单次请求获取全局概览，避免多次往返 |
+| 恢复现场时先 `resume`，普通查询时直接最小读取 | 既保留恢复效率，也避免把 `resume` 当成默认入口 |
 | 用 `focus_nodes` 而不是整树扫描 | 只返回可执行节点 + 祖先链 |
 | 用 `preset=summary` 而不是 `full` | 减少 90%+ 响应体积 |
 | 用 `parent_node_id` 限定范围 | 只读直接子节点 |
 | 用 `max_relative_depth=2` | 控制子树下钻深度 |
 | 用 `cursor` 分页 | 大列表分批加载 |
+
+### `resume` 约束速记
+
+- 允许：刚接手任务，只有 `task_id`，当前节点/阶段/最近进展不明确。
+- 禁止：已知 `node_id`、只想找下一步、只想看局部树、同一轮重复读取同一 `task_id`。
+- 替代：`get_node[_context]`、`next_node`、`focus_nodes`、`list_nodes`、`work_items`。
 
 ### 写入效率
 

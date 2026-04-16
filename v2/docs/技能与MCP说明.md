@@ -95,11 +95,24 @@ MCP 连接配置：
 ### 推荐读取顺序
 
 ```
+恢复现场时：
 task_tree_resume
 → task_tree_focus_nodes 或 task_tree_list_nodes_summary
 → task_tree_get_node_context(preset=summary)
+
+普通查询时：
+task_tree_next_node / task_tree_focus_nodes / task_tree_list_nodes(parent_node_id=... / subtree_root_node_id=...)
+→ task_tree_get_node_context(preset=summary)
 → 按需补充：preset=memory / work，list_node_runs，get_run(include_logs=true)
 ```
+
+### `resume` 使用约束
+
+- `task_tree_resume` 只用于恢复工作现场，不是默认第一跳。
+- 已知 `node_id` 时，优先 `task_tree_get_node` / `task_tree_get_node_context`。
+- 只想找下一步时，优先 `task_tree_next_node`。
+- 只看局部树或可执行节点时，优先 `task_tree_focus_nodes` / `task_tree_list_nodes` / `task_tree_work_items`。
+- 同一轮里对同一 `task_id` 默认最多一次 `resume`。
 
 ## 5. HTTP only 能力
 
@@ -120,7 +133,7 @@ task_tree_resume
 2. **执行前 Claim**：先 `claim_and_start_run` 再执行
 3. **完成用 Complete**：`progress(1.0)` 不等于完成
 4. **先搜索再开始**：新工作前优先 `smart_search`
-5. **渐进式读取**：先 resume → focus → summary → 按需下钻
+5. **渐进式读取**：先判断是否需要 `resume`；只有恢复现场才 `resume`，否则直接最小读取
 
 ## 7. DXT
 

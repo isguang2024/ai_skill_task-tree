@@ -1,4 +1,4 @@
-task_tree_resume - 根据 task_id 返回轻量 resume 包与推荐下一步；支持 include=events,runs,artifacts,next_node_context,task_memory,stage_memory，并支持 parent_node_id/subtree_root_node_id/max_relative_depth 等树过滤参数。
+task_tree_resume - 仅用于恢复工作现场：根据 task_id 返回轻量 resume 包与推荐下一步；支持 include=events,runs,artifacts,next_node_context,task_memory,stage_memory，并支持 parent_node_id/subtree_root_node_id/max_relative_depth 等树过滤参数。
 task_tree_list_tasks - 列出任务，可按状态、关键词或项目过滤。
 task_tree_list_projects - 列出项目，可按关键词过滤。
 task_tree_get_project - 读取单个项目详情。

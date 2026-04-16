@@ -120,21 +120,27 @@ task_tree_create_task(stages + nodes)     # 一步创建完整骨架
 
 > **progress 调用频率**：每完成一个关键操作（写完代码、测试通过、配置修改等）就调一次，不要攒到最后才报。这是执行过程的唯一记录来源。
 
-### 2. 恢复上下文并继续
+### 2. 恢复现场并继续
 
 ```
-task_tree_resume(task_id)                 # 轻量恢复
+task_tree_resume(task_id)                 # 仅在当前节点/阶段/最近进展不明确时使用
 → 按 recommended_action 或局部树选择节点
 → task_tree_claim_and_start_run(node_id)
 → 执行步骤 → progress(0.x, log_content="...") → 执行步骤 → progress → ... → complete
 ```
 
-### 3. 渐进式读取（先摘要再下钻）
+> 如果已知 `node_id`、只想找下一步，或只需要局部树，**不要先调 `resume`**；改用 `task_tree_get_node` / `task_tree_get_node_context` / `task_tree_next_node` / `task_tree_focus_nodes` / `task_tree_list_nodes`。
+
+### 3. 渐进式读取（先判定，再下钻）
 
 ```
-task_tree_resume                          # 第1层：任务概览
+恢复现场时：
+task_tree_resume(task_id)                 # 第1层：恢复包（仅限恢复现场）
 → task_tree_focus_nodes                   # 第2层：可执行节点
 → task_tree_get_node_context(preset=summary) # 第3层：节点概要
+
+普通查询时：
+task_tree_next_node / task_tree_focus_nodes / task_tree_get_node_context(preset=summary)
 → 按需补充：preset=memory / work / full
 ```
 
@@ -169,7 +175,7 @@ task_tree_resume                          # 第1层：任务概览
 
 | 工具 | 用途 | 关键参数 |
 |------|------|---------|
-| `task_tree_resume` | **核心入口**：轻量恢复包 | `task_id`，`include=events,runs,artifacts,next_node_context,task_memory,stage_memory` |
+| `task_tree_resume` | **恢复现场专用**：轻量恢复包 | `task_id`，`include=events,runs,artifacts,next_node_context,task_memory,stage_memory` |
 | `task_tree_next_node` | 推荐下一可执行节点 | `task_id` |
 | `task_tree_get_remaining` | 剩余统计 | `task_id` |
 | `task_tree_get_task_context` | 任务上下文快照 | `task_id` |
@@ -269,6 +275,16 @@ task_tree_resume                          # 第1层：任务概览
 
 **不要**默认读整树、完整 context、完整 run 日志。
 
+### `resume` 使用约束（重要）
+
+- `task_tree_resume` 只用于**恢复工作现场**，不是 task tree 的默认第一跳。
+- 只有 `task_id`，且当前执行节点、当前阶段或最近进展不明确时，才调用 `resume`。
+- 已知 `node_id` 时，优先用 `task_tree_get_node(include_context=true)` 或 `task_tree_get_node_context`。
+- 只想找下一步时，优先用 `task_tree_next_node`。
+- 只想看可执行节点或局部树时，优先用 `task_tree_focus_nodes`、`task_tree_list_nodes` 或 `task_tree_work_items`。
+- 同一轮里对同一 `task_id` 默认最多一次 `resume`；若没有重大状态变化，不要重复调用。
+- 调用 `resume` 后必须基于返回结果缩小范围，不要再补一轮 `get_task`、`list_nodes`、`focus_nodes` 的重复读取。
+
 ## 行为规则
 
 ### 1. 执行优先
@@ -288,6 +304,12 @@ group 只做组织容器，leaf 承载执行。对 group 调 `claim`/`complete` 
 
 ### 6. 自主推进但按局部树判断
 `recommended_action` 是建议。应在依赖已满足的 `ready` 节点中选择最合理的下一步。
+
+### 6.1 `resume` 只用于恢复现场
+
+- `resume` 不是默认起手式，也不是普通查询入口。
+- 仅当你需要恢复“最近在做什么、当前在哪个节点、下一步是什么”时才调用。
+- 如果已经知道要看的节点、子树或下一步，就直接用最小读取工具，不要为“保险起见”再调一次 `resume`。
 
 ### 7. 产物记录用链接，不用上传
 AI 生产的文件（代码、文档等）直接写到文件系统，再用 `create_artifact(uri=路径)` 记录链接。**禁止** AI 生成内容后 base64 编码再 `upload_artifact`——这会双倍消耗 output tokens。`upload_artifact` 仅限非 AI 生成的外部文件（截图、下载的附件等）。
@@ -360,6 +382,7 @@ task_tree_transition_node(action=block, message=原因)
 | 对 `group` 节点调 `complete` | 只有 `leaf` 能完成 |
 | 创建子节点不设父节点 kind | 父节点必须是 `group` |
 | 直接读 `preset=full` | 先读 `summary`，按需下钻 |
+| 已知节点或只想找下一步还先调 `resume` | `resume` 仅用于恢复现场；普通查询改用 `get_node[_context]` / `next_node` / `focus_nodes` |
 | 手写 `execution_log` | 用 `progress(log_content=...)` 自动记录 |
 | AI 生成内容后 `upload_artifact` base64 上传 | AI 产物写文件 → `create_artifact(uri=路径)` 记链接 |
 | `progress(1.0)` 后以为节点已完成 | `progress(1.0)` 不标 done，必须调 `complete` |

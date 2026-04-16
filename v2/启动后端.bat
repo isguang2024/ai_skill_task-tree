@@ -11,9 +11,15 @@ cd /d "%~dp0backend" || (
   exit /b 1
 )
 set "TTS_ADDR=127.0.0.1:8880"
+set "BACKEND_EXE=%CD%\task-tree-service.exe"
 echo Working directory: %CD%
-echo Starting backend in debug mode...
-go run ./cmd/task-tree-service serve
+if exist "%BACKEND_EXE%" (
+  echo Starting backend from prebuilt executable...
+  "%BACKEND_EXE%" serve
+) else (
+  echo Prebuilt executable not found. Falling back to go run debug mode...
+  go run ./cmd/task-tree-service serve
+)
 if errorlevel 1 (
   echo Backend exited with errorlevel %errorlevel%.
 )

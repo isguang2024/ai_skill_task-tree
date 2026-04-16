@@ -50,6 +50,8 @@
 
 ## 默认读取规则（HTTP + MCP 统一）
 
+`resume` 只用于恢复工作现场，不是默认查询入口。
+
 | 接口 | 默认行为 | 需显式请求 |
 |------|---------|-----------|
 | `resume` | 轻量包（task + tree + remaining + next_node_summary） | `include=events,runs,artifacts,next_node_context,task_memory,stage_memory` |
@@ -63,11 +65,15 @@
 ## 推荐读取路径
 
 ```
+恢复现场：
 1. resume — 轻量恢复
 2. focus_nodes / list_nodes_summary — 锁定可执行节点
 3. get_node_context(preset=summary) — 节点概要
-4. 按需补充：preset=memory/work，list_node_runs，get_run(include_logs=true)
-5. 任务级参考：get_task_context
+
+普通查询：
+1. get_node / get_node_context / next_node / focus_nodes / list_nodes
+2. 按需补充：preset=memory/work，list_node_runs，get_run(include_logs=true)
+3. 任务级参考：get_task_context
 ```
 
 ## 后端性能优化说明
