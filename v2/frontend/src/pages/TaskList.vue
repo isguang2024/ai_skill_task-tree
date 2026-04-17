@@ -106,11 +106,29 @@
             <n-text strong>{{ selectedProject.name }}</n-text>
             <n-tag v-if="selectedProject.project_key" size="small">{{ selectedProject.project_key }}</n-tag>
           </n-space>
-          <n-space align="center" :size="6">
+          <n-space align="center" :size="6" wrap>
             <n-input v-model:value="searchQuery" placeholder="搜索任务" clearable style="width:180px;"
               @update:value="debouncedLoadTasks" />
             <n-select v-model:value="statusFilter" :options="statusOpts" style="width:130px;"
               @update:value="loadProjectTasks" clearable placeholder="全部状态" />
+            <n-button size="small" tertiary @click="toggleSelectionMode">
+              {{ selectionMode ? '退出多选' : '多选任务' }}
+            </n-button>
+            <template v-if="selectionMode">
+              <n-tag type="warning" size="small">已选 {{ selectedTaskIds.length }} 项</n-tag>
+              <n-button size="small" :disabled="tasks.length===0" @click="toggleSelectAllTasks">
+                {{ allTasksSelected ? '取消全选' : '全选当前页' }}
+              </n-button>
+              <n-button
+                size="small"
+                type="error"
+                :disabled="selectedTaskIds.length===0"
+                :loading="batchRecycling"
+                @click="confirmBatchRecycle"
+              >
+                批量回收
+              </n-button>
+            </template>
           </n-space>
         </n-space>
       </n-card>
@@ -129,7 +147,7 @@
       <!-- Task grid 3 per row -->
       <n-grid :cols="3" :x-gap="12" :y-gap="12">
         <n-gi v-for="task in tasks" :key="task.id">
-          <n-card hoverable size="small" @click="goTask(task)" style="cursor:pointer;height:100%;">
+          <n-card hoverable size="small" @click="handleTaskCardClick(task)" :style="taskCardStyle(task)">
             <template #header>
               <n-space align="center" :size="6">
                 <n-tag :type="statusType(task.status)" size="small" :bordered="false">{{ stateLabel(task.status, task.result) }}</n-tag>
@@ -138,7 +156,16 @@
               </n-space>
             </template>
             <template #header-extra>
-              <n-text depth="3" style="font-size:11px;">{{ shortTime(task.updated_at) }}</n-text>
+              <n-space align="center" :size="6" @click.stop>
+                <n-tag v-if="selectionMode && isTaskSelected(task.id)" type="primary" size="small" round>已选</n-tag>
+                <n-checkbox
+                  v-if="selectionMode"
+                  :checked="isTaskSelected(task.id)"
+                  @update:checked="setTaskSelection(task.id, $event)"
+                  @click.stop
+                />
+                <n-text depth="3" style="font-size:11px;">{{ shortTime(task.updated_at) }}</n-text>
+              </n-space>
             </template>
             <div style="font-size:14px;font-weight:600;margin-bottom:4px;">{{ task.title }}</div>
             <n-text v-if="task.goal" depth="3" style="font-size:12px;display:block;margin-bottom:8px;">
@@ -189,6 +216,9 @@ const summary = ref(null)
 const loading = ref(true)
 const searchQuery = ref('')
 const statusFilter = ref(null)
+const selectionMode = ref(false)
+const selectedTaskIds = ref([])
+const batchRecycling = ref(false)
 
 const statusOpts = [
   { label: '就绪', value: 'ready' },
@@ -214,6 +244,8 @@ const summaryItems = computed(() => {
     { label: '关闭', value: s.closed },
   ]
 })
+
+const allTasksSelected = computed(() => tasks.value.length > 0 && selectedTaskIds.value.length === tasks.value.length)
 
 // Load all projects with mini stats
 async function loadProjects() {
@@ -245,6 +277,7 @@ async function openProject(proj) {
   selectedProject.value = proj
   searchQuery.value = ''
   statusFilter.value = null
+  resetTaskSelection({ exitMode: true })
   router.push('/projects/' + proj.id)
   // loadProjectTasks will be triggered by watcher on projectId prop
 }
@@ -253,6 +286,7 @@ function closeProject() {
   selectedProject.value = null
   searchQuery.value = ''
   statusFilter.value = null
+  resetTaskSelection({ exitMode: true })
   router.push('/')
 }
 
@@ -292,6 +326,109 @@ function goTask(task) {
       backPath: selectedProject.value?.id ? '/projects/' + selectedProject.value.id : '/',
     },
   })
+}
+
+function resetTaskSelection(options = {}) {
+  selectedTaskIds.value = []
+  if (options.exitMode) selectionMode.value = false
+}
+
+function isTaskSelected(taskId) {
+  return selectedTaskIds.value.includes(taskId)
+}
+
+function setTaskSelection(taskId, checked) {
+  if (!selectionMode.value) return
+  if (checked) {
+    if (!isTaskSelected(taskId)) selectedTaskIds.value = [...selectedTaskIds.value, taskId]
+    return
+  }
+  selectedTaskIds.value = selectedTaskIds.value.filter(id => id !== taskId)
+}
+
+function toggleTaskSelection(taskId) {
+  setTaskSelection(taskId, !isTaskSelected(taskId))
+}
+
+function toggleSelectionMode() {
+  if (selectionMode.value) {
+    resetTaskSelection({ exitMode: true })
+    return
+  }
+  selectionMode.value = true
+}
+
+function toggleSelectAllTasks() {
+  if (allTasksSelected.value) {
+    selectedTaskIds.value = []
+    return
+  }
+  selectedTaskIds.value = tasks.value.map(task => task.id)
+}
+
+function handleTaskCardClick(task) {
+  if (selectionMode.value) {
+    toggleTaskSelection(task.id)
+    return
+  }
+  goTask(task)
+}
+
+function taskCardStyle(task) {
+  const selected = selectionMode.value && isTaskSelected(task.id)
+  return {
+    cursor: 'pointer',
+    height: '100%',
+    borderColor: selected ? 'var(--n-primary-color)' : '',
+    boxShadow: selected ? '0 0 0 1px var(--n-primary-color)' : '',
+    background: selected ? 'rgba(24, 160, 88, 0.06)' : '',
+  }
+}
+
+function confirmBatchRecycle() {
+  if (!selectedTaskIds.value.length || batchRecycling.value) return
+  const count = selectedTaskIds.value.length
+  window.$dialog?.warning({
+    title: '批量回收任务',
+    content: count === 1
+      ? '选中的任务将移入回收站，可在回收站恢复。确定继续？'
+      : `选中的 ${count} 个任务将移入回收站，可在回收站恢复。确定继续？`,
+    positiveText: '确认回收',
+    negativeText: '取消',
+    onPositiveClick: runBatchRecycle,
+  })
+}
+
+async function runBatchRecycle() {
+  if (!selectedTaskIds.value.length || batchRecycling.value) return
+  const ids = [...selectedTaskIds.value]
+  batchRecycling.value = true
+  const failedIds = []
+  try {
+    for (const id of ids) {
+      try {
+        await api('/tasks/' + id, { method: 'DELETE' })
+      } catch {
+        failedIds.push(id)
+      }
+    }
+    const successCount = ids.length - failedIds.length
+    if (successCount > 0) {
+      window.$message?.success(
+        failedIds.length === 0
+          ? `已回收 ${successCount} 个任务`
+          : `已回收 ${successCount} 个任务，${failedIds.length} 个失败`
+      )
+    }
+    if (failedIds.length > 0) {
+      window.$message?.error('部分任务回收失败，请重试')
+    }
+    await loadProjectTasks()
+    selectionMode.value = failedIds.length > 0
+    selectedTaskIds.value = failedIds.filter(id => tasks.value.some(task => task.id === id))
+  } finally {
+    batchRecycling.value = false
+  }
 }
 
 // Edit / Delete project
@@ -427,17 +564,26 @@ async function initByProp() {
       selectedProject.value = proj
       searchQuery.value = ''
       statusFilter.value = null
+      resetTaskSelection({ exitMode: true })
       await loadProjectTasks()
     } catch {
       router.replace('/')
     }
   } else {
     selectedProject.value = null
+    resetTaskSelection({ exitMode: true })
     loadProjects()
   }
 }
 
 watch(() => props.projectId, initByProp)
+watch(tasks, currentTasks => {
+  const validIds = new Set(currentTasks.map(task => task.id))
+  selectedTaskIds.value = selectedTaskIds.value.filter(id => validIds.has(id))
+  if (selectionMode.value && currentTasks.length === 0) {
+    resetTaskSelection({ exitMode: true })
+  }
+})
 
 onMounted(() => { initByProp(); startAutoRefresh() })
 onActivated(() => { initByProp(); startAutoRefresh() })
