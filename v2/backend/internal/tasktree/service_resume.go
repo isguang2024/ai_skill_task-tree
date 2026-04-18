@@ -179,7 +179,7 @@ func (a *App) buildNodeContextWithOptions(ctx context.Context, nodeID string, op
 		ancestors = append(ancestors, ancestorEntry)
 	}
 
-	rows, err := a.queryContext(ctx, `SELECT id, task_id, parent_node_id, path, title, kind, status, progress, estimate, depends_on_json, updated_at, sort_order, created_at FROM nodes WHERE task_id = ? AND COALESCE(parent_node_id, '') = ? AND deleted_at IS NULL ORDER BY sort_order, created_at`, taskID, asString(node["parent_node_id"]))
+	rows, err := a.queryContext(ctx, `SELECT n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.progress, n.estimate, n.usage_tokens, n.depends_on_json, n.updated_at, n.sort_order, n.created_at, EXISTS(SELECT 1 FROM nodes c WHERE c.parent_node_id = n.id AND c.deleted_at IS NULL) AS has_children FROM nodes n WHERE n.task_id = ? AND COALESCE(n.parent_node_id, '') = ? AND n.deleted_at IS NULL ORDER BY n.sort_order, n.created_at`, taskID, asString(node["parent_node_id"]))
 	if err != nil {
 		return nil, err
 	}
@@ -575,6 +575,7 @@ func trimTaskForResume(task jsonMap) jsonMap {
 		"title":                 task["title"],
 		"status":                task["status"],
 		"project_id":            task["project_id"],
+		"usage_tokens":          task["usage_tokens"],
 		"current_stage_node_id": task["current_stage_node_id"],
 		"summary_percent":       task["summary_percent"],
 		"summary_done":          task["summary_done"],

@@ -50,9 +50,9 @@ func (a *App) listNodesWithOptions(ctx context.Context, taskID string, opts node
 
 	selectFields := `n.*, EXISTS(SELECT 1 FROM nodes c WHERE c.parent_node_id = n.id AND c.deleted_at IS NULL) AS has_children`
 	if opts.ViewMode == "slim" {
-		selectFields = `n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.depth, n.sort_order, n.created_at`
+		selectFields = `n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.usage_tokens, n.depth, n.sort_order, n.created_at`
 	} else if opts.ViewMode == "summary" || opts.ViewMode == "events" {
-		selectFields = `n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.progress, n.estimate, n.depends_on_json, n.created_at, n.updated_at, EXISTS(SELECT 1 FROM nodes c WHERE c.parent_node_id = n.id AND c.deleted_at IS NULL) AS has_children`
+		selectFields = `n.id, n.task_id, n.parent_node_id, n.path, n.title, n.kind, n.status, n.progress, n.estimate, n.usage_tokens, n.depends_on_json, n.created_at, n.updated_at, EXISTS(SELECT 1 FROM nodes c WHERE c.parent_node_id = n.id AND c.deleted_at IS NULL) AS has_children`
 	}
 	query := `SELECT ` + selectFields + ` FROM nodes n WHERE n.task_id = ?`
 	args := []any{taskID}
@@ -381,6 +381,7 @@ func buildNodeSummary(item jsonMap) jsonMap {
 		"status":           item["status"],
 		"progress":         item["progress"],
 		"estimate":         item["estimate"],
+		"usage_tokens":     item["usage_tokens"],
 		"depends_on":       stringSliceFromAny(item["depends_on"]),
 		"depends_on_count": len(stringSliceFromAny(item["depends_on"])),
 		"updated_at":       item["updated_at"],
@@ -398,6 +399,7 @@ func buildNodeSlim(item jsonMap) jsonMap {
 		"kind":           item["kind"],
 		"role":           item["role"],
 		"status":         item["status"],
+		"usage_tokens":   item["usage_tokens"],
 		"depth":          item["depth"],
 		"has_children":   item["has_children"],
 		"stage_node_id":  item["stage_node_id"],
@@ -976,6 +978,7 @@ func (a *App) completeNode(ctx context.Context, nodeID string, body completeBody
 			Result:           &doneResult,
 			Status:           &finishedStatus,
 			OutputPreview:    body.Message,
+			UsageTokens:      body.UsageTokens,
 			StructuredResult: body.ResultPayload,
 		}); err != nil {
 			return err
@@ -1187,25 +1190,45 @@ func (a *App) rollupTask(ctx context.Context, taskID string) error {
 		parent := asString(node["parent_node_id"])
 		groupChildren[parent] = append(groupChildren[parent], node)
 	}
+	usageByNode := map[string]int{}
+	rows, err := a.queryContext(ctx, `SELECT node_id, COALESCE(SUM(COALESCE(usage_tokens, 0)), 0) AS usage_tokens FROM node_runs WHERE task_id = ? GROUP BY node_id`, taskID)
+	if err != nil {
+		return err
+	}
+	items, err := scanRows(rows)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		usageByNode[asString(item["node_id"])] = asInt(item["usage_tokens"])
+	}
 	sortNodesByDepthDesc(nodes)
 	for _, node := range nodes {
-		if asString(node["kind"]) != "group" {
+		id := asString(node["id"])
+		children := groupChildren[id]
+		usage := usageByNode[id]
+		isGroupLike := asString(node["kind"]) == "group" || len(children) > 0
+		if isGroupLike && len(children) > 0 {
+			sum := 0.0
+			for _, child := range children {
+				sum += asFloat(child["progress"])
+				usage += usageByNode[asString(child["id"])]
+			}
+			progress := sum / float64(len(children))
+			status, result := aggregateRollupState(children)
+			node["progress"] = progress
+			node["status"] = status
+			node["result"] = result
+			node["usage_tokens"] = usage
+			usageByNode[id] = usage
+			if _, err := a.execContext(ctx, `UPDATE nodes SET progress = ?, status = ?, result = ?, usage_tokens = ?, updated_at = ?, version = version + 1 WHERE id = ?`, progress, status, result, usage, utcNowISO(), id); err != nil {
+				return err
+			}
 			continue
 		}
-		children := groupChildren[asString(node["id"])]
-		if len(children) == 0 {
-			continue
-		}
-		sum := 0.0
-		for _, child := range children {
-			sum += asFloat(child["progress"])
-		}
-		progress := sum / float64(len(children))
-		status, result := aggregateRollupState(children)
-		node["progress"] = progress
-		node["status"] = status
-		node["result"] = result
-		if _, err := a.execContext(ctx, `UPDATE nodes SET progress = ?, status = ?, result = ?, updated_at = ?, version = version + 1 WHERE id = ?`, progress, status, result, utcNowISO(), node["id"]); err != nil {
+		node["usage_tokens"] = usage
+		usageByNode[id] = usage
+		if _, err := a.execContext(ctx, `UPDATE nodes SET usage_tokens = ?, updated_at = ?, version = version + 1 WHERE id = ?`, usage, utcNowISO(), id); err != nil {
 			return err
 		}
 	}
@@ -1225,8 +1248,14 @@ func (a *App) rollupTask(ctx context.Context, taskID string) error {
 	} else {
 		status, result = aggregateRollupState(summary.LeafNodes)
 	}
-	_, err = a.execContext(ctx, `UPDATE tasks SET summary_percent = ?, summary_done = ?, summary_total = ?, summary_blocked = ?, status = ?, result = ?, updated_at = ? WHERE id = ?`,
-		percent, summary.DoneCount, summary.Total, summary.BlockedCount, status, result, utcNowISO(), taskID)
+	taskUsage := 0
+	for _, node := range nodes {
+		if asString(node["parent_node_id"]) == "" {
+			taskUsage += usageByNode[asString(node["id"])]
+		}
+	}
+	_, err = a.execContext(ctx, `UPDATE tasks SET summary_percent = ?, summary_done = ?, summary_total = ?, summary_blocked = ?, usage_tokens = ?, status = ?, result = ?, updated_at = ? WHERE id = ?`,
+		percent, summary.DoneCount, summary.Total, summary.BlockedCount, taskUsage, status, result, utcNowISO(), taskID)
 	return err
 }
 

@@ -303,6 +303,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request) {
 			Status:           body.Status,
 			OutputPreview:    body.OutputPreview,
 			OutputRef:        body.OutputRef,
+			UsageTokens:      body.UsageTokens,
 			StructuredResult: body.StructuredResult,
 			ErrorText:        body.ErrorText,
 		})

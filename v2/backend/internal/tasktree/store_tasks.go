@@ -334,6 +334,7 @@ func buildTaskSummary(item jsonMap) jsonMap {
 		"title":           item["title"],
 		"status":          item["status"],
 		"project_id":      item["project_id"],
+		"usage_tokens":    item["usage_tokens"],
 		"summary_percent": item["summary_percent"],
 		"summary_done":    item["summary_done"],
 		"summary_total":   item["summary_total"],

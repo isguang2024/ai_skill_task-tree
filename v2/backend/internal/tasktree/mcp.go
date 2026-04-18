@@ -8,7 +8,10 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 )
+
+const mcpCallTimeout = 60 * time.Second
 
 const mcpProtocolVersionLatest = "2025-11-25"
 
@@ -121,6 +124,8 @@ func (s *mcpServer) handle(raw []byte) *rpcResponse {
 	}
 }
 
+type mcpToolHandler func(ctx context.Context, s *mcpServer, args map[string]any) (any, error)
+
 func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 	var payload struct {
 		Name      string         `json:"name"`
@@ -130,547 +135,18 @@ func (s *mcpServer) callTool(params json.RawMessage) (map[string]any, error) {
 		return nil, err
 	}
 	payload.Name = canonicalToolName(payload.Name)
-	ctx := context.Background()
-	var result any
-	var err error
-	switch payload.Name {
-	case "task_tree_resume":
-		result, err = s.app.resumeTaskWithOptions(ctx, stringArg(payload.Arguments, "task_id"), nodeListOptions{
-			Statuses:          stringSliceArg(payload.Arguments, "status"),
-			Kinds:             stringSliceArg(payload.Arguments, "kind"),
-			Depth:             optIntArg(payload.Arguments, "depth"),
-			MaxDepth:          optIntArg(payload.Arguments, "max_depth"),
-			ParentNodeID:      stringArg(payload.Arguments, "parent_node_id"),
-			SubtreeRootNodeID: stringArg(payload.Arguments, "subtree_root_node_id"),
-			MaxRelativeDepth:  optIntArg(payload.Arguments, "max_relative_depth"),
-			HasChildren:       optBoolArg(payload.Arguments, "has_children"),
-			Query:             stringArg(payload.Arguments, "q"),
-			Limit:             intArg(payload.Arguments, "limit", 100),
-			Cursor:            stringArg(payload.Arguments, "cursor"),
-			SortBy:            stringArg(payload.Arguments, "sort_by"),
-			SortOrder:         stringArg(payload.Arguments, "sort_order"),
-			ViewMode:          stringArgDefault(payload.Arguments, "view_mode", "summary"),
-			FilterMode:        stringArg(payload.Arguments, "filter_mode"),
-			IncludeFullTree:   boolArg(payload.Arguments, "include_full_tree"),
-		}, eventListOptions{
-			Types:     stringSliceArg(payload.Arguments, "event_type"),
-			Query:     stringArg(payload.Arguments, "event_q"),
-			ViewMode:  stringArg(payload.Arguments, "event_view_mode"),
-			SortOrder: stringArg(payload.Arguments, "event_sort_order"),
-			Limit:     intArg(payload.Arguments, "event_limit", 15),
-			Cursor:    stringArg(payload.Arguments, "event_cursor"),
-		}, resumeOptions{
-			IncludeEvents:          hasStringArg(payload.Arguments, "include", "events"),
-			IncludeRuns:            hasStringArg(payload.Arguments, "include", "runs"),
-			IncludeArtifacts:       hasStringArg(payload.Arguments, "include", "artifacts"),
-			IncludeNextNodeContext: hasStringArg(payload.Arguments, "include", "next_node_context"),
-			IncludeTaskMemory:      hasStringArg(payload.Arguments, "include", "task_memory"),
-			IncludeStageMemory:     hasStringArg(payload.Arguments, "include", "stage_memory"),
-		})
-	case "task_tree_list_tasks":
-		var items []jsonMap
-		items, err = s.app.listTasksByProject(ctx, stringArg(payload.Arguments, "status"), stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "project_id"), boolArg(payload.Arguments, "include_deleted"), false, intArg(payload.Arguments, "limit", 100))
-		if err == nil {
-			summaries := make([]jsonMap, 0, len(items))
-			for _, item := range items {
-				summaries = append(summaries, buildTaskSummary(item))
-			}
-			result = summaries
-		}
-	case "task_tree_list_projects":
-		result, err = s.app.listProjects(ctx, stringArg(payload.Arguments, "q"), boolArg(payload.Arguments, "include_deleted"), intArg(payload.Arguments, "limit", 100))
-	case "task_tree_get_project":
-		result, err = s.app.getProject(ctx, stringArg(payload.Arguments, "project_id"), boolArg(payload.Arguments, "include_deleted"))
-	case "task_tree_create_project":
-		result, err = s.app.createProject(ctx, projectCreate{
-			ProjectKey:  optStringArg(payload.Arguments, "project_key"),
-			Name:        stringArg(payload.Arguments, "name"),
-			Description: optStringArg(payload.Arguments, "description"),
-			IsDefault:   optBoolArg(payload.Arguments, "is_default"),
-			Metadata:    mapArg(payload.Arguments, "metadata"),
-		})
-	case "task_tree_update_project":
-		result, err = s.app.updateProject(ctx, stringArg(payload.Arguments, "project_id"), projectUpdate{
-			ProjectKey:      optStringArg(payload.Arguments, "project_key"),
-			Name:            optStringArg(payload.Arguments, "name"),
-			Description:     optStringArg(payload.Arguments, "description"),
-			IsDefault:       optBoolArg(payload.Arguments, "is_default"),
-			Metadata:        mapArg(payload.Arguments, "metadata"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_delete_project":
-		err = s.app.deleteProject(ctx, stringArg(payload.Arguments, "project_id"))
-		if err == nil {
-			result = map[string]any{"ok": true}
-		}
-	case "task_tree_project_overview":
-		result, err = s.app.projectOverview(ctx, stringArg(payload.Arguments, "project_id"), boolArg(payload.Arguments, "include_deleted"), intArg(payload.Arguments, "limit", 100))
-	case "task_tree_get_task":
-		result, err = s.app.getTask(ctx, stringArg(payload.Arguments, "task_id"), boolArg(payload.Arguments, "include_deleted"))
-	case "task_tree_create_task":
-		var stages []stageCreate
-		stages, err = stageCreatesArg(payload.Arguments, "stages")
-		if err != nil {
-			break
-		}
-		var seeds []taskNodeSeed
-		seeds, err = taskNodeSeedsArg(payload.Arguments, "nodes")
-		if err != nil {
-			break
-		}
-		result, err = s.app.createTask(ctx, taskCreate{
-			TaskKey:         optStringArg(payload.Arguments, "task_key"),
-			Title:           stringArg(payload.Arguments, "title"),
-			Goal:            optStringArg(payload.Arguments, "goal"),
-			ProjectID:       optStringArg(payload.Arguments, "project_id"),
-			ProjectKey:      optStringArg(payload.Arguments, "project_key"),
-			SourceTool:      optStringArg(payload.Arguments, "source_tool"),
-			SourceSessionID: optStringArg(payload.Arguments, "source_session_id"),
-			Tags:            stringSliceArg(payload.Arguments, "tags"),
-			Nodes:           seeds,
-			Stages:          stages,
-			DryRun:          optBoolArg(payload.Arguments, "dry_run"),
-			Metadata:        mapArg(payload.Arguments, "metadata"),
-			CreatedByType:   optStringArg(payload.Arguments, "created_by_type"),
-			CreatedByID:     optStringArg(payload.Arguments, "created_by_id"),
-			CreationReason:  optStringArg(payload.Arguments, "creation_reason"),
-		})
-	case "task_tree_update_task":
-		result, err = s.app.updateTask(ctx, stringArg(payload.Arguments, "task_id"), taskUpdate{
-			TaskKey:         optStringArg(payload.Arguments, "task_key"),
-			Title:           optStringArg(payload.Arguments, "title"),
-			Goal:            optStringArg(payload.Arguments, "goal"),
-			ProjectID:       optStringArg(payload.Arguments, "project_id"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_create_node":
-		result, err = s.app.createNode(ctx, stringArg(payload.Arguments, "task_id"), nodeCreate{
-			ParentNodeID:       optStringArg(payload.Arguments, "parent_node_id"),
-			StageNodeID:        optStringArg(payload.Arguments, "stage_node_id"),
-			NodeKey:            optStringArg(payload.Arguments, "node_key"),
-			Kind:               stringArgDefault(payload.Arguments, "kind", "leaf"),
-			Role:               optStringArg(payload.Arguments, "role"),
-			Title:              stringArg(payload.Arguments, "title"),
-			Instruction:        optStringArg(payload.Arguments, "instruction"),
-			AcceptanceCriteria: stringSliceArg(payload.Arguments, "acceptance_criteria"),
-			DependsOn:          stringSliceArg(payload.Arguments, "depends_on"),
-			DependsOnKeys:      stringSliceArg(payload.Arguments, "depends_on_keys"),
-			Estimate:           optFloatArg(payload.Arguments, "estimate"),
-			Status:             optStringArg(payload.Arguments, "status"),
-			SortOrder:          optIntArg(payload.Arguments, "sort_order"),
-			Metadata:           mapArg(payload.Arguments, "metadata"),
-			CreatedByType:      optStringArg(payload.Arguments, "created_by_type"),
-			CreatedByID:        optStringArg(payload.Arguments, "created_by_id"),
-			CreationReason:     optStringArg(payload.Arguments, "creation_reason"),
-		})
-	case "task_tree_list_stages":
-		var items []jsonMap
-		items, err = s.app.listStages(ctx, stringArg(payload.Arguments, "task_id"))
-		if err == nil {
-			summaries := make([]jsonMap, 0, len(items))
-			for _, item := range items {
-				summaries = append(summaries, buildStageSummary(item))
-			}
-			result = jsonMap{"items": summaries}
-		}
-	case "task_tree_create_stage":
-		result, err = s.app.createStage(ctx, stringArg(payload.Arguments, "task_id"), stageCreate{
-			NodeKey:            optStringArg(payload.Arguments, "node_key"),
-			Title:              stringArg(payload.Arguments, "title"),
-			Instruction:        optStringArg(payload.Arguments, "instruction"),
-			AcceptanceCriteria: stringSliceArg(payload.Arguments, "acceptance_criteria"),
-			Estimate:           optFloatArg(payload.Arguments, "estimate"),
-			SortOrder:          optIntArg(payload.Arguments, "sort_order"),
-			Metadata:           mapArg(payload.Arguments, "metadata"),
-			Activate:           optBoolArg(payload.Arguments, "activate"),
-			ExpectedVersion:    optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_batch_create_stages":
-		var stages []stageCreate
-		stages, err = stageCreatesArg(payload.Arguments, "stages")
-		if err != nil {
-			break
-		}
-		var items []jsonMap
-		items, err = s.app.batchCreateStages(ctx, stringArg(payload.Arguments, "task_id"), stages)
-		result = jsonMap{"created": items, "count": len(items)}
-	case "task_tree_activate_stage":
-		result, err = s.app.activateStage(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "stage_node_id"), stageActivate{
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-			Message:         optStringArg(payload.Arguments, "message"),
-			Actor:           actorArg(payload.Arguments, "actor"),
-		})
-	case "task_tree_start_run":
-		result, err = s.app.startRun(ctx, stringArg(payload.Arguments, "node_id"), runStart{
-			Actor:            actorArg(payload.Arguments, "actor"),
-			TriggerKind:      optStringArg(payload.Arguments, "trigger_kind"),
-			InputSummary:     optStringArg(payload.Arguments, "input_summary"),
-			OutputPreview:    optStringArg(payload.Arguments, "output_preview"),
-			OutputRef:        optStringArg(payload.Arguments, "output_ref"),
-			StructuredResult: mapArg(payload.Arguments, "structured_result"),
-		})
-	case "task_tree_finish_run":
-		result, err = s.app.finishRun(ctx, stringArg(payload.Arguments, "run_id"), runFinish{
-			Result:           optStringArg(payload.Arguments, "result"),
-			Status:           optStringArg(payload.Arguments, "status"),
-			OutputPreview:    optStringArg(payload.Arguments, "output_preview"),
-			OutputRef:        optStringArg(payload.Arguments, "output_ref"),
-			StructuredResult: mapArg(payload.Arguments, "structured_result"),
-			ErrorText:        optStringArg(payload.Arguments, "error_text"),
-		})
-	case "task_tree_get_run":
-		result, err = s.app.getRunWithOptions(ctx, stringArg(payload.Arguments, "run_id"), runListOptions{
-			IncludeLogs: boolArg(payload.Arguments, "include_logs"),
-		})
-	case "task_tree_list_node_runs":
-		result, err = s.app.listNodeRunsWithOptions(ctx, stringArg(payload.Arguments, "node_id"), runListOptions{
-			Limit:    intArg(payload.Arguments, "limit", 20),
-			Cursor:   stringArg(payload.Arguments, "cursor"),
-			ViewMode: stringArg(payload.Arguments, "view_mode"),
-		})
-	case "task_tree_append_run_log":
-		result, err = s.app.addRunLog(ctx, stringArg(payload.Arguments, "run_id"), runLogCreate{
-			Kind:    stringArg(payload.Arguments, "kind"),
-			Content: optStringArg(payload.Arguments, "content"),
-			Payload: mapArg(payload.Arguments, "payload"),
-		})
-	case "task_tree_get_node_context":
-		result, err = s.app.buildNodeContextWithOptions(ctx, stringArg(payload.Arguments, "node_id"), nodeContextOptions{
-			Preset: stringArg(payload.Arguments, "preset"),
-		})
-	case "task_tree_list_nodes":
-		result, err = s.app.listNodesWithOptions(ctx, stringArg(payload.Arguments, "task_id"), nodeListOptions{
-			Statuses:          stringSliceArg(payload.Arguments, "status"),
-			Kinds:             stringSliceArg(payload.Arguments, "kind"),
-			Depth:             optIntArg(payload.Arguments, "depth"),
-			MaxDepth:          optIntArg(payload.Arguments, "max_depth"),
-			ParentNodeID:      stringArg(payload.Arguments, "parent_node_id"),
-			SubtreeRootNodeID: stringArg(payload.Arguments, "subtree_root_node_id"),
-			MaxRelativeDepth:  optIntArg(payload.Arguments, "max_relative_depth"),
-			UpdatedAfter:      stringArg(payload.Arguments, "updated_after"),
-			HasChildren:       optBoolArg(payload.Arguments, "has_children"),
-			Query:             stringArg(payload.Arguments, "q"),
-			Limit:             intArg(payload.Arguments, "limit", 100),
-			Cursor:            stringArg(payload.Arguments, "cursor"),
-			SortBy:            stringArg(payload.Arguments, "sort_by"),
-			SortOrder:         stringArg(payload.Arguments, "sort_order"),
-			ViewMode:          stringArgDefault(payload.Arguments, "view_mode", "summary"),
-			FilterMode:        stringArg(payload.Arguments, "filter_mode"),
-			IncludeHidden:     boolArg(payload.Arguments, "include_deleted"),
-		})
-	case "task_tree_list_nodes_summary":
-		result, err = s.app.listNodesWithOptions(ctx, stringArg(payload.Arguments, "task_id"), nodeListOptions{
-			Statuses:          stringSliceArg(payload.Arguments, "status"),
-			Kinds:             stringSliceArg(payload.Arguments, "kind"),
-			Depth:             optIntArg(payload.Arguments, "depth"),
-			MaxDepth:          optIntArg(payload.Arguments, "max_depth"),
-			ParentNodeID:      stringArg(payload.Arguments, "parent_node_id"),
-			SubtreeRootNodeID: stringArg(payload.Arguments, "subtree_root_node_id"),
-			MaxRelativeDepth:  optIntArg(payload.Arguments, "max_relative_depth"),
-			Query:             stringArg(payload.Arguments, "q"),
-			Limit:             intArg(payload.Arguments, "limit", 100),
-			Cursor:            stringArg(payload.Arguments, "cursor"),
-			SortBy:            stringArg(payload.Arguments, "sort_by"),
-			SortOrder:         stringArg(payload.Arguments, "sort_order"),
-			ViewMode:          "summary",
-			FilterMode:        stringArg(payload.Arguments, "filter_mode"),
-		})
-	case "task_tree_list_children":
-		result, err = s.app.listNodesWithOptions(ctx, stringArg(payload.Arguments, "task_id"), nodeListOptions{
-			Statuses:     stringSliceArg(payload.Arguments, "status"),
-			ParentNodeID: stringArg(payload.Arguments, "node_id"),
-			Limit:        intArg(payload.Arguments, "limit", 100),
-			Cursor:       stringArg(payload.Arguments, "cursor"),
-			SortBy:       stringArg(payload.Arguments, "sort_by"),
-			SortOrder:    stringArg(payload.Arguments, "sort_order"),
-			ViewMode:     "summary",
-		})
-	case "task_tree_list_subtree_summary":
-		result, err = s.app.listNodesWithOptions(ctx, stringArg(payload.Arguments, "task_id"), nodeListOptions{
-			Statuses:          stringSliceArg(payload.Arguments, "status"),
-			SubtreeRootNodeID: stringArg(payload.Arguments, "root_node_id"),
-			MaxRelativeDepth:  optIntArg(payload.Arguments, "max_relative_depth"),
-			Limit:             intArg(payload.Arguments, "limit", 100),
-			Cursor:            stringArg(payload.Arguments, "cursor"),
-			SortBy:            stringArg(payload.Arguments, "sort_by"),
-			SortOrder:         stringArg(payload.Arguments, "sort_order"),
-			ViewMode:          "summary",
-		})
-	case "task_tree_focus_nodes":
-		result, err = s.app.listNodesWithOptions(ctx, stringArg(payload.Arguments, "task_id"), nodeListOptions{
-			Statuses:   stringSliceArg(payload.Arguments, "status"),
-			Limit:      intArg(payload.Arguments, "limit", 100),
-			Cursor:     stringArg(payload.Arguments, "cursor"),
-			SortBy:     stringArgDefault(payload.Arguments, "sort_by", "path"),
-			SortOrder:  stringArgDefault(payload.Arguments, "sort_order", "asc"),
-			ViewMode:   stringArgDefault(payload.Arguments, "view_mode", "summary"),
-			FilterMode: "focus",
-		})
-	case "task_tree_update_node":
-		criteria := optStringSliceArg(payload.Arguments, "acceptance_criteria")
-		depends := optStringSliceArg(payload.Arguments, "depends_on")
-		result, err = s.app.updateNode(ctx, stringArg(payload.Arguments, "node_id"), nodeUpdate{
-			Title:              optStringArg(payload.Arguments, "title"),
-			Instruction:        optStringArg(payload.Arguments, "instruction"),
-			AcceptanceCriteria: criteria,
-			DependsOn:          depends,
-			DependsOnKeys:      optStringSliceArg(payload.Arguments, "depends_on_keys"),
-			Estimate:           optFloatArg(payload.Arguments, "estimate"),
-			SortOrder:          optIntArg(payload.Arguments, "sort_order"),
-			ExpectedVersion:    optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_reorder_nodes":
-		ids := optStringSliceArg(payload.Arguments, "node_ids")
-		if ids == nil {
-			err = &appError{Code: 400, Msg: "node_ids 不能为空"}
-		} else {
-			var items []jsonMap
-			items, err = s.app.reorderNodes(ctx, *ids)
-			result = items
-		}
-	case "task_tree_move_node":
-		result, err = s.app.moveNode(ctx, stringArg(payload.Arguments, "node_id"), moveNodeBody{
-			AfterNodeID:  optStringArg(payload.Arguments, "after_node_id"),
-			BeforeNodeID: optStringArg(payload.Arguments, "before_node_id"),
-		})
-	case "task_tree_get_node":
-		nodeID := stringArg(payload.Arguments, "node_id")
-		if boolArg(payload.Arguments, "include_context") {
-			result, err = s.app.buildNodeContextWithOptions(ctx, nodeID, nodeContextOptions{
-				Preset: stringArg(payload.Arguments, "preset"),
-			})
-		} else {
-			result, err = s.app.findNode(ctx, nodeID, boolArg(payload.Arguments, "include_deleted"))
-		}
-	case "task_tree_progress":
-		result, err = s.app.reportProgress(ctx, stringArg(payload.Arguments, "node_id"), progressBody{
-			DeltaProgress:   optFloatArg(payload.Arguments, "delta_progress"),
-			Progress:        optFloatArg(payload.Arguments, "progress"),
-			Message:         optStringArg(payload.Arguments, "message"),
-			LogContent:      optStringArg(payload.Arguments, "log_content"),
-			Actor:           actorArg(payload.Arguments, "actor"),
-			IdempotencyKey:  optStringArg(payload.Arguments, "idempotency_key"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_complete":
-		var inlineMemory *memoryFullPatchBody
-		if memArg := mapArg(payload.Arguments, "memory"); memArg != nil {
-			inlineMemory = &memoryFullPatchBody{
-				SummaryText: optStringArg(memArg, "summary_text"),
-				Conclusions: stringSliceArg(memArg, "conclusions"),
-				Decisions:   stringSliceArg(memArg, "decisions"),
-				Risks:       stringSliceArg(memArg, "risks"),
-				Blockers:    stringSliceArg(memArg, "blockers"),
-				NextActions: stringSliceArg(memArg, "next_actions"),
-				Evidence:    stringSliceArg(memArg, "evidence"),
-			}
-		}
-		result, err = s.app.completeNode(ctx, stringArg(payload.Arguments, "node_id"), completeBody{
-			Message:         optStringArg(payload.Arguments, "message"),
-			Actor:           actorArg(payload.Arguments, "actor"),
-			IdempotencyKey:  optStringArg(payload.Arguments, "idempotency_key"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-			Memory:          inlineMemory,
-			ResultPayload:   mapArg(payload.Arguments, "result_payload"),
-		})
-	case "task_tree_block_node":
-		result, err = s.app.blockNode(ctx, stringArg(payload.Arguments, "node_id"), blockBody{
-			Reason:          stringArg(payload.Arguments, "reason"),
-			Actor:           actorArg(payload.Arguments, "actor"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_claim":
-		result, err = s.app.claimNode(ctx, stringArg(payload.Arguments, "node_id"), claimBody{
-			Actor:           mustActorArg(payload.Arguments, "actor"),
-			LeaseSeconds:    optIntArg(payload.Arguments, "lease_seconds"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_release":
-		result, err = s.app.releaseNode(ctx, stringArg(payload.Arguments, "node_id"))
-	case "task_tree_retype_node":
-		result, err = s.app.retypeNodeToLeaf(ctx, stringArg(payload.Arguments, "node_id"), retypeBody{
-			Message:         optStringArg(payload.Arguments, "message"),
-			Actor:           actorArg(payload.Arguments, "actor"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_transition_task":
-		result, err = s.app.transitionTask(ctx, stringArg(payload.Arguments, "task_id"), transitionBody{
-			Action:          stringArg(payload.Arguments, "action"),
-			Message:         optStringArg(payload.Arguments, "message"),
-			Actor:           actorArg(payload.Arguments, "actor"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_transition_node":
-		result, err = s.app.transitionNode(ctx, stringArg(payload.Arguments, "node_id"), transitionBody{
-			Action:          stringArg(payload.Arguments, "action"),
-			Message:         optStringArg(payload.Arguments, "message"),
-			Actor:           actorArg(payload.Arguments, "actor"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_delete_node":
-		result, err = s.app.deleteNode(ctx, stringArg(payload.Arguments, "node_id"))
-	case "task_tree_get_remaining":
-		result, err = s.app.getRemaining(ctx, stringArg(payload.Arguments, "task_id"))
-	case "task_tree_get_resume_context":
-		result, err = s.app.getResumeContext(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "node_id"), intArg(payload.Arguments, "event_limit", 5))
-	case "task_tree_list_events":
-		evLimit := intArg(payload.Arguments, "limit", 20)
-		result, err = s.app.listEventsScoped(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "node_id"), boolArg(payload.Arguments, "include_descendants"), stringArg(payload.Arguments, "before"), stringArg(payload.Arguments, "after"), evLimit, eventListOptions{
-			Types:     stringSliceArg(payload.Arguments, "type"),
-			Query:     stringArg(payload.Arguments, "q"),
-			ViewMode:  stringArg(payload.Arguments, "view_mode"),
-			SortOrder: stringArg(payload.Arguments, "sort_order"),
-			Limit:     evLimit,
-			Cursor:    stringArg(payload.Arguments, "cursor"),
-		})
-	case "task_tree_list_artifacts":
-		nodeID := optStringArg(payload.Arguments, "node_id")
-		result, err = s.app.listArtifactsWithOptions(ctx, stringArg(payload.Arguments, "task_id"), nodeID, artifactListOptions{
-			Limit:    intArg(payload.Arguments, "limit", 100),
-			Cursor:   stringArg(payload.Arguments, "cursor"),
-			ViewMode: stringArg(payload.Arguments, "view_mode"),
-			Kind:     stringArg(payload.Arguments, "kind"),
-		})
-	case "task_tree_create_artifact":
-		result, err = s.app.createArtifact(ctx, stringArg(payload.Arguments, "task_id"), artifactCreate{
-			NodeID: optStringArg(payload.Arguments, "node_id"),
-			Kind:   optStringArg(payload.Arguments, "kind"),
-			Title:  optStringArg(payload.Arguments, "title"),
-			URI:    stringArg(payload.Arguments, "uri"),
-			Meta:   mapArg(payload.Arguments, "meta"),
-		})
-	case "task_tree_upload_artifact":
-		result, err = s.app.uploadArtifactBase64(ctx, stringArg(payload.Arguments, "task_id"), artifactUpload{
-			NodeID:      optStringArg(payload.Arguments, "node_id"),
-			Kind:        optStringArg(payload.Arguments, "kind"),
-			Title:       optStringArg(payload.Arguments, "title"),
-			Filename:    stringArg(payload.Arguments, "filename"),
-			ContentBase: stringArg(payload.Arguments, "content_base64"),
-			Meta:        mapArg(payload.Arguments, "meta"),
-		})
-	case "task_tree_delete_task":
-		result, err = s.app.softDeleteTask(ctx, stringArg(payload.Arguments, "task_id"))
-	case "task_tree_restore_task":
-		result, err = s.app.restoreTask(ctx, stringArg(payload.Arguments, "task_id"))
-	case "task_tree_hard_delete_task":
-		result, err = s.app.hardDeleteTask(ctx, stringArg(payload.Arguments, "task_id"))
-	case "task_tree_empty_trash":
-		result, err = s.app.emptyTrash(ctx)
-	case "task_tree_sweep_leases":
-		var cleared int64
-		cleared, err = s.app.sweepExpiredLeases(ctx)
-		result = jsonMap{"cleared": cleared}
-	case "task_tree_search":
-		// 已合并到 smart_search，内部转发
-		result, err = s.app.smartSearch(ctx, stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "kind"), "", intArg(payload.Arguments, "limit", 30))
-	case "task_tree_work_items":
-		var items []jsonMap
-		items, err = s.app.listWorkItems(ctx, stringArgDefault(payload.Arguments, "status", "ready"), boolArg(payload.Arguments, "include_claimed"), intArg(payload.Arguments, "limit", 50))
-		if err == nil {
-			summaries := make([]jsonMap, 0, len(items))
-			for _, item := range items {
-				summaries = append(summaries, buildWorkItemSummary(item))
-			}
-			result = jsonMap{"items": summaries}
-		}
-	case "task_tree_patch_node_memory":
-		result, err = s.app.patchNodeMemoryFull(ctx, stringArg(payload.Arguments, "node_id"), memoryFullPatchBody{
-			SummaryText:     optStringArg(payload.Arguments, "summary_text"),
-			Conclusions:     stringSliceArg(payload.Arguments, "conclusions"),
-			Decisions:       stringSliceArg(payload.Arguments, "decisions"),
-			Risks:           stringSliceArg(payload.Arguments, "risks"),
-			Blockers:        stringSliceArg(payload.Arguments, "blockers"),
-			NextActions:     stringSliceArg(payload.Arguments, "next_actions"),
-			Evidence:        stringSliceArg(payload.Arguments, "evidence"),
-			ManualNoteText:  optStringArg(payload.Arguments, "manual_note_text"),
-			ExpectedVersion: optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_next_node":
-		result, err = s.app.findNextNode(ctx, stringArg(payload.Arguments, "task_id"))
-	case "task_tree_smart_search":
-		result, err = s.app.smartSearch(ctx, stringArg(payload.Arguments, "q"), stringArg(payload.Arguments, "scope"), stringArg(payload.Arguments, "task_id"), intArg(payload.Arguments, "limit", 20))
-	case "task_tree_batch_create_nodes":
-		nodesRaw, provided, parseErr := anyArrayArg(payload.Arguments, "nodes")
-		if parseErr != nil {
-			err = &appError{Code: 400, Msg: parseErr.Error()}
-			break
-		}
-		if !provided {
-			err = &appError{Code: 400, Msg: "nodes required"}
-			break
-		}
-		bodies := make([]nodeCreate, 0, len(nodesRaw))
-		for _, raw := range nodesRaw {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				err = &appError{Code: 400, Msg: "nodes 必须是对象数组"}
-				break
-			}
-			bodies = append(bodies, nodeCreate{
-				ParentNodeID:       optStringArg(m, "parent_node_id"),
-				StageNodeID:        optStringArg(m, "stage_node_id"),
-				NodeKey:            optStringArg(m, "node_key"),
-				Kind:               stringArgDefault(m, "kind", "leaf"),
-				Role:               optStringArg(m, "role"),
-				Title:              stringArg(m, "title"),
-				Instruction:        optStringArg(m, "instruction"),
-				AcceptanceCriteria: stringSliceArg(m, "acceptance_criteria"),
-				DependsOn:          stringSliceArg(m, "depends_on"),
-				DependsOnKeys:      stringSliceArg(m, "depends_on_keys"),
-				Estimate:           optFloatArg(m, "estimate"),
-				Status:             optStringArg(m, "status"),
-				SortOrder:          optIntArg(m, "sort_order"),
-				Metadata:           mapArg(m, "metadata"),
-				CreatedByType:      optStringArg(m, "created_by_type"),
-				CreatedByID:        optStringArg(m, "created_by_id"),
-				CreationReason:     optStringArg(m, "creation_reason"),
-			})
-		}
-		if err != nil {
-			break
-		}
-		var items []jsonMap
-		items, err = s.app.batchCreateNodes(ctx, stringArg(payload.Arguments, "task_id"), bodies)
-		result = jsonMap{"created": items, "count": len(items)}
-	case "task_tree_tree_view":
-		result, err = s.app.treeView(ctx, stringArg(payload.Arguments, "task_id"), optStringArg(payload.Arguments, "stage_node_id"), boolArg(payload.Arguments, "only_executable"))
-	case "task_tree_import_plan":
-		result, err = s.app.importPlan(ctx, importPlanBody{
-			Format: stringArg(payload.Arguments, "format"),
-			Data:   stringArg(payload.Arguments, "data"),
-			Apply:  optBoolArg(payload.Arguments, "apply"),
-		})
-	case "task_tree_patch_task_context":
-		result, err = s.app.patchTaskContext(ctx, stringArg(payload.Arguments, "task_id"), taskContextPatchBody{
-			ArchitectureDecisions: optStringSliceArg(payload.Arguments, "architecture_decisions"),
-			ReferenceFiles:        optStringSliceArg(payload.Arguments, "reference_files"),
-			ContextDocText:        optStringArg(payload.Arguments, "context_doc_text"),
-			ExpectedVersion:       optIntArg(payload.Arguments, "expected_version"),
-		})
-	case "task_tree_get_task_context":
-		result, err = s.app.getTaskMemory(ctx, stringArg(payload.Arguments, "task_id"))
-	case "task_tree_claim_and_start_run":
-		result, err = s.app.claimAndStartRun(ctx, stringArg(payload.Arguments, "node_id"), claimStartBody{
-			Actor:        mustActorArg(payload.Arguments, "actor"),
-			LeaseSeconds: optIntArg(payload.Arguments, "lease_seconds"),
-			InputSummary: optStringArg(payload.Arguments, "input_summary"),
-			TriggerKind:  optStringArg(payload.Arguments, "trigger_kind"),
-			Metadata:     mapArg(payload.Arguments, "metadata"),
-		})
-	case "task_tree_rebuild_index":
-		err = s.app.rebuildSearchIndex(ctx)
-		result = jsonMap{"status": "ok", "message": "索引重建完成"}
-	case "task_tree_wrapup":
-		result, err = s.app.wrapupTask(ctx, stringArg(payload.Arguments, "task_id"), stringArg(payload.Arguments, "summary"))
-	case "task_tree_get_wrapup":
-		result, err = s.app.getWrapup(ctx, stringArg(payload.Arguments, "task_id"))
-	default:
+	handler, ok := mcpToolHandlers[payload.Name]
+	if !ok {
 		return nil, fmt.Errorf("unknown tool: %s", payload.Name)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), mcpCallTimeout)
+	defer cancel()
+	result, err := handler(ctx, s, payload.Arguments)
 	if err != nil {
 		return nil, err
 	}
 	if m, ok := result.(jsonMap); ok {
+		normalizeListEnvelope(m)
 		omitEmpty(m)
 	}
 	if items, ok := result.([]jsonMap); ok {
@@ -909,6 +385,7 @@ func mcpTools() []mcpTool {
 				"status":            stringSchema("Run 状态"),
 				"output_preview":    stringSchema("输出摘要"),
 				"output_ref":        stringSchema("输出引用"),
+				"usage_tokens":      intSchema("本次运行用量（tokens）"),
 				"structured_result": mapSchema("结构化结果"),
 				"error_text":        stringSchema("错误信息"),
 			}, []string{"run_id"}),
@@ -1093,6 +570,7 @@ func mcpTools() []mcpTool {
 			InputSchema: objectSchema(map[string]any{
 				"node_id":         stringSchema("节点 ID"),
 				"message":         stringSchema("完成说明"),
+				"usage_tokens":    intSchema("本节点本次完成用量（tokens）"),
 				"memory":          mapSchema("可选：内联写入 Memory（含 summary_text, conclusions, decisions, risks, evidence 等），省去单独调用 patch_node_memory。注意：execution_log 已改为系统自动从 run_logs 聚合，无需手写"),
 				"result_payload":  mapSchema("结构化执行结果，如 files_created/files_modified/commands_verified/notes"),
 				"idempotency_key": stringSchema("幂等 key"),
@@ -1416,7 +894,7 @@ func mcpTools() []mcpTool {
 				"risks":            arrayStringSchema("风险列表：已知风险和隐患"),
 				"blockers":         arrayStringSchema("阻塞项列表"),
 				"next_actions":     arrayStringSchema("下一步行动列表"),
-				"evidence":        arrayStringSchema("证据列表：改动的文件路径、命令输出、验证结果"),
+				"evidence":         arrayStringSchema("证据列表：改动的文件路径、命令输出、验证结果"),
 				"manual_note_text": stringSchema("人工备注"),
 				"expected_version": intSchema("乐观锁版本号"),
 			}, []string{"node_id"}),

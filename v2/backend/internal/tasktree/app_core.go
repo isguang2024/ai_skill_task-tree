@@ -99,7 +99,7 @@ func NewApp() (*App, error) {
 	if err := os.MkdirAll(filepath.Dir(absDB), 0o755); err != nil {
 		return nil, err
 	}
-	dsn := absDB + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)"
+	dsn := absDB + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -121,10 +121,12 @@ func NewApp() (*App, error) {
 	if err := app.migrate(); err != nil {
 		return nil, err
 	}
-	if err := app.ensureDefaultProject(context.Background()); err != nil {
+	bootCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := app.ensureDefaultProject(bootCtx); err != nil {
 		return nil, err
 	}
-	if _, err := app.sweepExpiredLeases(context.Background()); err != nil {
+	if _, err := app.sweepExpiredLeases(bootCtx); err != nil {
 		return nil, err
 	}
 	app.registerRoutes()

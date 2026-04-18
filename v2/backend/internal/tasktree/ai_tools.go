@@ -526,6 +526,14 @@ func (a *App) executeAITool(ctx context.Context, name string, inputRaw json.RawM
 		if msg != "" {
 			body.Message = &msg
 		}
+		switch usage := in["usage_tokens"].(type) {
+		case float64:
+			value := int(usage)
+			body.UsageTokens = &value
+		case int:
+			value := usage
+			body.UsageTokens = &value
+		}
 		item, err := a.completeNode(ctx, nodeID, body)
 		if err != nil {
 			return "complete_node 失败: " + err.Error()

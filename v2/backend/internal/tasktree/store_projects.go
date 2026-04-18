@@ -247,7 +247,7 @@ func (a *App) projectOverview(ctx context.Context, projectID string, includeDele
 	if err != nil {
 		return nil, err
 	}
-	query := `SELECT id, task_key, title, status, result, summary_percent, summary_done, summary_total, summary_blocked, current_stage_node_id, project_id, updated_at, created_at FROM tasks WHERE project_id = ?`
+	query := `SELECT id, task_key, title, status, result, usage_tokens, summary_percent, summary_done, summary_total, summary_blocked, current_stage_node_id, project_id, updated_at, created_at FROM tasks WHERE project_id = ?`
 	args := []any{projectID}
 	if !includeDeleted {
 		query += ` AND deleted_at IS NULL`
@@ -414,6 +414,7 @@ func (a *App) projectOverview(ctx context.Context, projectID string, includeDele
 			"title":           task["title"],
 			"status":          task["status"],
 			"result":          task["result"],
+			"usage_tokens":    task["usage_tokens"],
 			"summary_percent": task["summary_percent"],
 			"updated_at":      task["updated_at"],
 			"current_stage":   task["current_stage"],

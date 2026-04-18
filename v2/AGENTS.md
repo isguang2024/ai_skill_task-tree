@@ -61,13 +61,14 @@ go run ./cmd/task-tree-service serve
 
 1. **端口固定**：后端/MCP 用 `8880`，前端 dev 用 `5174`
 2. **能力边界明确**：新增核心能力必须说明是否提供 HTTP API 和 MCP 工具；暂时只有 HTTP 的必须标注"HTTP only"
-3. **测试验证**：后端改动后 `go test ./...`，前端改动后 `npm run build`
-4. **文档同步**：修改 MCP 工具、默认规则、技能工作流或能力边界后，同步更新以下文件：
+3. **MCP list_\* 形状契约**：任何返回集合的 MCP 工具（名字含 `list_` 或 `work_items` 这类聚合）必须返回 `{items, has_more, next_cursor}`。非分页时设 `has_more=false, next_cursor=""`；可直接调用 `wrapListResult(items)`。新增工具请同步扩展 `TestListToolsReturnUnifiedShape`（`backend/internal/tasktree/mcp_list_contract_test.go`），否则回归测试会红。HTTP 面的裸数组是历史兼容（`/v1/tasks`、`/v1/projects`、`/v1/tasks/{id}/stages`），新接口不应沿用。
+4. **测试验证**：后端改动后 `go test ./...`，前端改动后 `npm run build`
+5. **文档同步**：修改 MCP 工具、默认规则、技能工作流或能力边界后，同步更新以下文件：
    - `skill/SKILL.md` + `skill/docs/` 下的文档
    - `docs/技能与MCP说明.md`
    - `backend/docs/http-mcp-parity.md`
    - `backend/docs/mcp-open-manifest.txt`
-5. **全局技能同步**：上述文件修改后，同步到全局技能目录：
+6. **全局技能同步**：上述文件修改后，同步到全局技能目录：
    - `C:\Users\Administrator\.claude\skills\task-tree\`（Claude Code）
    - `C:\Users\Administrator\.codex\skills\task-tree\`（Codex）
    - 包括 `SKILL.md` 和 `skill/docs/` 下的所有文档

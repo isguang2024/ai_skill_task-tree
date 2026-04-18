@@ -27,14 +27,15 @@ type workspacePageData struct {
 }
 
 type workspaceSummary struct {
-	Total    int
-	Ready    int
-	Running  int
-	Blocked  int
-	Paused   int
-	Done     int
-	Canceled int
-	Closed   int
+	Total       int
+	Ready       int
+	Running     int
+	Blocked     int
+	Paused      int
+	Done        int
+	Canceled    int
+	Closed      int
+	UsageTokens int
 }
 
 type workspaceTaskCard struct {
@@ -44,6 +45,7 @@ type workspaceTaskCard struct {
 	Goal          string
 	Status        string
 	Result        string
+	UsageTokens   int
 	Percent       int
 	UpdatedAt     string
 	Deleted       bool
@@ -61,6 +63,7 @@ type workspaceTaskDetail struct {
 	Goal                string
 	Status              string
 	Result              string
+	UsageTokens         int
 	Percent             int
 	UpdatedAt           string
 	Remaining           int
@@ -94,6 +97,7 @@ type workspaceNodeCard struct {
 	Kind              string
 	Status            string
 	Result            string
+	UsageTokens       int
 	Progress          int
 	Estimate          string
 	EstimateValue     string
@@ -238,18 +242,19 @@ func (a *App) renderUIV2Fallback(w http.ResponseWriter, data workspacePageData) 
       <h1>Task Tree</h1>
       <p class="muted">{{.Title}}</p>
       {{if .Task}}<p class="muted">当前任务：{{.Task.Title}}</p>{{end}}
+      {{if .Summary}}<p class="muted">当前页面总用量：{{.Summary.UsageTokens}} tokens</p>{{end}}
     </section>
     <section class="grid">
       {{if .Task}}
       <div class="panel">
         <strong>{{.Task.Title}}</strong>
-        <div class="muted">状态：{{.Task.Status}} · 进度：{{.Task.Percent}}%</div>
+        <div class="muted">状态：{{.Task.Status}} · 进度：{{.Task.Percent}}% · 用量：{{.Task.UsageTokens}} tokens</div>
       </div>
       {{end}}
       {{range .Tasks}}
       <div class="task">
         <strong>{{.Title}}</strong>
-        <div class="muted">{{.Status}} · {{.Percent}}%</div>
+        <div class="muted">{{.Status}} · {{.Percent}}% · {{.UsageTokens}} tokens</div>
       </div>
       {{end}}
       {{if and (not .Task) (eq (len .Tasks) 0)}}
@@ -280,6 +285,7 @@ func (a *App) renderTaskListPageV2(w http.ResponseWriter, r *http.Request, secti
 	summary := &workspaceSummary{Total: len(tasks)}
 	for _, task := range tasks {
 		card := workspaceTaskCardFromMap(task)
+		summary.UsageTokens += card.UsageTokens
 		switch card.Status {
 		case "ready":
 			summary.Ready++
@@ -363,6 +369,7 @@ func (a *App) renderTaskDetailPageV2(w http.ResponseWriter, r *http.Request, tas
 		Goal:          asString(task["goal"]),
 		Status:        asString(task["status"]),
 		Result:        asString(task["result"]),
+		UsageTokens:   asInt(task["usage_tokens"]),
 		Percent:       workspacePercentInt(task["summary_percent"]),
 		UpdatedAt:     workspaceShortTime(task["updated_at"]),
 		Remaining:     int(asFloat(remaining["remaining_nodes"])),
@@ -522,15 +529,16 @@ func (a *App) renderSearchPageV2(w http.ResponseWriter, r *http.Request) {
 
 func workspaceTaskCardFromMap(task map[string]any) workspaceTaskCard {
 	return workspaceTaskCard{
-		ID:        asString(task["id"]),
-		TaskKey:   asString(task["task_key"]),
-		Title:     asString(task["title"]),
-		Goal:      strings.TrimSpace(asString(task["goal"])),
-		Status:    asString(task["status"]),
-		Result:    asString(task["result"]),
-		Percent:   workspacePercentInt(task["summary_percent"]),
-		UpdatedAt: workspaceShortTime(task["updated_at"]),
-		Deleted:   asString(task["deleted_at"]) != "",
+		ID:          asString(task["id"]),
+		TaskKey:     asString(task["task_key"]),
+		Title:       asString(task["title"]),
+		Goal:        strings.TrimSpace(asString(task["goal"])),
+		Status:      asString(task["status"]),
+		Result:      asString(task["result"]),
+		UsageTokens: asInt(task["usage_tokens"]),
+		Percent:     workspacePercentInt(task["summary_percent"]),
+		UpdatedAt:   workspaceShortTime(task["updated_at"]),
+		Deleted:     asString(task["deleted_at"]) != "",
 	}
 }
 
@@ -554,6 +562,7 @@ func workspaceNodeCardFromMap(node map[string]any) workspaceNodeCard {
 		Kind:              kind,
 		Status:            status,
 		Result:            result,
+		UsageTokens:       asInt(node["usage_tokens"]),
 		Progress:          workspacePercentInt(node["progress"]),
 		Estimate:          fmt.Sprintf("%.1fh", asFloat(node["estimate"])),
 		EstimateValue:     workspaceTrimFloat(asFloat(node["estimate"])),

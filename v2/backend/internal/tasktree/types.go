@@ -107,6 +107,7 @@ type runFinishBody struct {
 	Status           *string        `json:"status"`
 	OutputPreview    *string        `json:"output_preview"`
 	OutputRef        *string        `json:"output_ref"`
+	UsageTokens      *int           `json:"usage_tokens"`
 	StructuredResult map[string]any `json:"structured_result"`
 	ErrorText        *string        `json:"error_text"`
 }
@@ -152,6 +153,7 @@ type completeBody struct {
 	Actor           *actor               `json:"actor"`
 	IdempotencyKey  *string              `json:"idempotency_key"`
 	ExpectedVersion *int                 `json:"expected_version"`
+	UsageTokens     *int                 `json:"usage_tokens"`
 	Memory          *memoryFullPatchBody `json:"memory"`
 	ResultPayload   map[string]any       `json:"result_payload"`
 }

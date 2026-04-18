@@ -713,10 +713,9 @@ func TestCreateTaskWithInitialNodeTree(t *testing.T) {
 	}
 
 	resume := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+tid+"/resume")
-	nextWrap, _ := resume["next_node"].(map[string]any)
-	nextNode, _ := nextWrap["node"].(map[string]any)
-	if stringValue(nextNode["path"]) != "TREE/1" {
-		t.Fatalf("next node path = %v", nextNode["path"])
+	nextSummary, _ := resume["next_node_summary"].(map[string]any)
+	if stringValue(nextSummary["path"]) != "TREE/1" {
+		t.Fatalf("next node path = %v", nextSummary["path"])
 	}
 }
 
@@ -861,10 +860,12 @@ func TestNodeRunsFlow(t *testing.T) {
 		t.Fatalf("run logs len = %d", len(logs))
 	}
 
+	usageTokens := 321
 	finished, err := app.finishRun(context.Background(), stringValue(run["id"]), runFinish{
 		Result:        strPtr("done"),
 		Status:        strPtr("finished"),
 		OutputPreview: strPtr("执行完成"),
+		UsageTokens:   &usageTokens,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -874,6 +875,9 @@ func TestNodeRunsFlow(t *testing.T) {
 	}
 	if stringValue(finished["status"]) != "finished" {
 		t.Fatalf("finished status = %v", finished["status"])
+	}
+	if asInt(finished["usage_tokens"]) != 321 {
+		t.Fatalf("finished usage_tokens = %v", finished["usage_tokens"])
 	}
 
 	doneNode, err := app.findNode(context.Background(), stringValue(node["id"]), false)
@@ -889,6 +893,16 @@ func TestNodeRunsFlow(t *testing.T) {
 	if stringValue(doneNode["result"]) != "done" {
 		t.Fatalf("node result after finish = %v", doneNode["result"])
 	}
+	if asInt(doneNode["usage_tokens"]) != 321 {
+		t.Fatalf("node usage_tokens after finish = %v", doneNode["usage_tokens"])
+	}
+	doneTask, err := app.getTask(context.Background(), stringValue(task["id"]), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asInt(doneTask["usage_tokens"]) != 321 {
+		t.Fatalf("task usage_tokens after finish = %v", doneTask["usage_tokens"])
+	}
 
 	nodeRuns, err := app.listNodeRuns(context.Background(), stringValue(node["id"]), 10)
 	if err != nil {
@@ -896,6 +910,71 @@ func TestNodeRunsFlow(t *testing.T) {
 	}
 	if len(nodeRuns) != 1 {
 		t.Fatalf("node runs len = %d", len(nodeRuns))
+	}
+}
+
+func TestRunUsageAutoCaptureFromCodexState(t *testing.T) {
+	tmp := t.TempDir()
+	codexDBPath := filepath.Join(tmp, ".codex", "state_5.sqlite")
+	prepareCodexStateDB(t, codexDBPath, "thread-auto", 1000)
+	t.Setenv("CODEX_STATE_DB_PATH", codexDBPath)
+	t.Setenv("CODEX_THREAD_ID", "thread-auto")
+	t.Setenv("TTS_DB_PATH", filepath.Join(tmp, "auto-usage.db"))
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.db.Close()
+
+	task, err := app.createTask(context.Background(), taskCreate{Title: "自动用量测试", TaskKey: strPtr("AUTO")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := app.createNode(context.Background(), stringValue(task["id"]), nodeCreate{Title: "自动用量节点", NodeKey: strPtr("1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := app.startRun(context.Background(), stringValue(node["id"]), runStart{
+		TriggerKind:  strPtr("manual"),
+		InputSummary: strPtr("开始自动用量测试"),
+		Actor:        &actor{Tool: strPtr("codex"), AgentID: strPtr("runner-auto")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(run["usage_thread_id"]) != "thread-auto" {
+		t.Fatalf("usage_thread_id = %v", run["usage_thread_id"])
+	}
+	if asInt(run["usage_start_tokens"]) != 1000 {
+		t.Fatalf("usage_start_tokens = %v", run["usage_start_tokens"])
+	}
+
+	prepareCodexStateDB(t, codexDBPath, "thread-auto", 1345)
+	finished, err := app.finishRun(context.Background(), stringValue(run["id"]), runFinish{
+		Result:        strPtr("done"),
+		Status:        strPtr("finished"),
+		OutputPreview: strPtr("自动抓取完成"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asInt(finished["usage_tokens"]) != 345 {
+		t.Fatalf("auto finished usage_tokens = %v", finished["usage_tokens"])
+	}
+
+	doneNode, err := app.findNode(context.Background(), stringValue(node["id"]), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asInt(doneNode["usage_tokens"]) != 345 {
+		t.Fatalf("auto node usage_tokens = %v", doneNode["usage_tokens"])
+	}
+	doneTask, err := app.getTask(context.Background(), stringValue(task["id"]), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asInt(doneTask["usage_tokens"]) != 345 {
+		t.Fatalf("auto task usage_tokens = %v", doneTask["usage_tokens"])
 	}
 }
 
@@ -940,15 +1019,26 @@ func TestRunRoutesAndSyntheticCompatibility(t *testing.T) {
 		"result":         "done",
 		"status":         "finished",
 		"output_preview": "HTTP 执行完成",
+		"usage_tokens":   88,
 	})
 	if stringValue(finished["result"]) != "done" {
 		t.Fatalf("http finished result = %v", finished["result"])
+	}
+	if asInt(finished["usage_tokens"]) != 88 {
+		t.Fatalf("http finished usage_tokens = %v", finished["usage_tokens"])
 	}
 
 	runsWrap := getJSON[map[string]any](t, server.URL+"/v1/nodes/"+stringValue(node["id"])+"/runs")
 	runs := workspaceAsItems(runsWrap["items"])
 	if len(runs) != 1 {
 		t.Fatalf("http node runs len = %d", len(runs))
+	}
+	if asInt(runs[0]["usage_tokens"]) != 88 {
+		t.Fatalf("http node run usage_tokens = %v", runs[0]["usage_tokens"])
+	}
+	taskAfterRun := getJSON[map[string]any](t, server.URL+"/v1/tasks/"+stringValue(task["id"]))
+	if asInt(taskAfterRun["usage_tokens"]) != 88 {
+		t.Fatalf("http task usage_tokens = %v", taskAfterRun["usage_tokens"])
 	}
 
 	task2 := postJSON[map[string]any](t, server.URL+"/v1/tasks", map[string]any{"title": "synthetic 兼容", "task_key": "SYN"})
@@ -972,6 +1062,28 @@ func TestRunRoutesAndSyntheticCompatibility(t *testing.T) {
 	syntheticLogs, _ := syntheticRun["logs"].([]any)
 	if len(syntheticLogs) == 0 {
 		t.Fatal("expected synthetic run logs")
+	}
+}
+
+func prepareCodexStateDB(t *testing.T, dbPath, threadID string, tokens int) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS threads (
+		id TEXT PRIMARY KEY,
+		tokens_used INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO threads(id, tokens_used) VALUES (?, ?)
+		ON CONFLICT(id) DO UPDATE SET tokens_used = excluded.tokens_used`, threadID, tokens); err != nil {
+		t.Fatal(err)
 	}
 }
 

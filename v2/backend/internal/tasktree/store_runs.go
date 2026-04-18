@@ -20,6 +20,7 @@ type runFinish struct {
 	Status           *string
 	OutputPreview    *string
 	OutputRef        *string
+	UsageTokens      *int
 	StructuredResult map[string]any
 	ErrorText        *string
 }
@@ -35,6 +36,7 @@ func (a *App) startRun(ctx context.Context, nodeID string, body runStart) (jsonM
 		out jsonMap
 		err error
 	)
+	snapshot, snapshotOK := a.currentCodexUsageSnapshot(ctx)
 	err = a.withTx(ctx, func(txCtx context.Context) error {
 		node, err := a.findNode(txCtx, nodeID, false)
 		if err != nil {
@@ -64,11 +66,18 @@ func (a *App) startRun(ctx context.Context, nodeID string, body runStart) (jsonM
 		if body.StructuredResult == nil {
 			body.StructuredResult = map[string]any{}
 		}
+		var usageThreadID any
+		var usageStartTokens any = 0
+		if snapshotOK {
+			usageThreadID = snapshot.ThreadID
+			usageStartTokens = snapshot.Tokens
+		}
 		if _, err := a.execContext(txCtx, `INSERT INTO node_runs(
 			id, task_id, node_id, stage_node_id, actor_type, actor_id, trigger_kind, status,
 			input_summary, output_preview, output_ref, structured_result_json,
+			usage_thread_id, usage_start_tokens,
 			started_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			runID,
 			asString(node["task_id"]),
 			nodeID,
@@ -81,6 +90,8 @@ func (a *App) startRun(ctx context.Context, nodeID string, body runStart) (jsonM
 			body.OutputPreview,
 			body.OutputRef,
 			mustJSON(body.StructuredResult),
+			usageThreadID,
+			usageStartTokens,
 			now,
 			now,
 			now,
@@ -141,14 +152,22 @@ func (a *App) finishRun(ctx context.Context, runID string, body runFinish) (json
 				body.StructuredResult = map[string]any{}
 			}
 		}
+		if body.UsageTokens == nil {
+			body.UsageTokens = resolveRunUsageTokens(txCtx, run, nil, a)
+		}
 		now := utcNowISO()
-		if _, err := a.execContext(txCtx, `UPDATE node_runs
+		updateQuery := `UPDATE node_runs
 			SET status = ?, result = ?, output_preview = COALESCE(?, output_preview),
 			    output_ref = COALESCE(?, output_ref), structured_result_json = ?, error_text = ?,
-			    finished_at = ?, updated_at = ?
-			WHERE id = ?`,
-			status, nullable(result), body.OutputPreview, body.OutputRef, mustJSON(body.StructuredResult), body.ErrorText, now, now, runID,
-		); err != nil {
+			    finished_at = ?, updated_at = ?`
+		updateArgs := []any{status, nullable(result), body.OutputPreview, body.OutputRef, mustJSON(body.StructuredResult), body.ErrorText, now, now}
+		if body.UsageTokens != nil {
+			updateQuery += `, usage_tokens = ?`
+			updateArgs = append(updateArgs, *body.UsageTokens)
+		}
+		updateQuery += ` WHERE id = ?`
+		updateArgs = append(updateArgs, runID)
+		if _, err := a.execContext(txCtx, updateQuery, updateArgs...); err != nil {
 			return err
 		}
 		nodeID := asString(run["node_id"])
@@ -317,7 +336,7 @@ func (a *App) listNodeRunsWithOptions(ctx context.Context, nodeID string, opts r
 	if viewMode == "" {
 		viewMode = "summary"
 	}
-	selectFields := `id, task_id, node_id, stage_node_id, actor_type, actor_id, trigger_kind, status, output_preview, output_ref, result, structured_result_json, started_at, finished_at, created_at, updated_at`
+	selectFields := `id, task_id, node_id, stage_node_id, actor_type, actor_id, trigger_kind, status, output_preview, output_ref, result, usage_tokens, structured_result_json, started_at, finished_at, created_at, updated_at`
 	if viewMode == "detail" {
 		selectFields = `*`
 	}
@@ -367,7 +386,7 @@ func (a *App) listTaskRuns(ctx context.Context, taskID string, limit int) ([]jso
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := a.queryContext(ctx, `SELECT id, task_id, node_id, stage_node_id, actor_type, actor_id, trigger_kind, status, result, output_preview, output_ref, structured_result_json, started_at, finished_at, created_at, updated_at FROM node_runs WHERE task_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?`, taskID, limit)
+	rows, err := a.queryContext(ctx, `SELECT id, task_id, node_id, stage_node_id, actor_type, actor_id, trigger_kind, status, result, output_preview, output_ref, usage_tokens, structured_result_json, started_at, finished_at, created_at, updated_at FROM node_runs WHERE task_id = ? ORDER BY updated_at DESC, id DESC LIMIT ?`, taskID, limit)
 	if err != nil {
 		return nil, err
 	}

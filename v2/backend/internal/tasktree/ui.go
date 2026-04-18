@@ -1,4 +1,4 @@
-﻿package tasktree
+package tasktree
 
 import (
 	"fmt"
@@ -21,14 +21,15 @@ type uiPageData struct {
 }
 
 type uiTaskCard struct {
-	ID        string
-	TaskKey   string
-	Title     string
-	Goal      string
-	Status    string
-	Percent   int
-	UpdatedAt string
-	Deleted   bool
+	ID          string
+	TaskKey     string
+	Title       string
+	Goal        string
+	Status      string
+	UsageTokens int
+	Percent     int
+	UpdatedAt   string
+	Deleted     bool
 }
 
 type uiTaskDetail struct {
@@ -37,6 +38,7 @@ type uiTaskDetail struct {
 	Title             string
 	Goal              string
 	Status            string
+	UsageTokens       int
 	Percent           int
 	UpdatedAt         string
 	Remaining         int
@@ -61,6 +63,7 @@ type uiNodeCard struct {
 	Title        string
 	Kind         string
 	Status       string
+	UsageTokens  int
 	Progress     int
 	Estimate     string
 	Instruction  string
@@ -143,6 +146,7 @@ var uiPageTpl = template.Must(template.New("page").Funcs(template.FuncMap{
       <div class="meta">
         <span class="pill {{statusClass .Node.Status}}">{{.Node.Status}}</span>
         <span class="pill">{{.Node.Progress}}%</span>
+        {{if gt .Node.UsageTokens 0}}<span class="pill">{{.Node.UsageTokens}} tokens</span>{{end}}
         {{if .Node.HasChildren}}<span class="pill">{{.Node.ChildCount}} 子节点</span>{{end}}
       </div>
     </div>
@@ -595,6 +599,7 @@ var uiPageTpl = template.Must(template.New("page").Funcs(template.FuncMap{
         <div class="meta">
           <span class="pill {{statusClass .Status}}">{{.Status}}</span>
           <span class="pill">{{.Percent}}%</span>
+          {{if gt .UsageTokens 0}}<span class="pill">{{.UsageTokens}} tokens</span>{{end}}
           {{if .Deleted}}<span class="pill muted">deleted</span>{{end}}
         </div>
       </a>
@@ -637,6 +642,7 @@ var uiPageTpl = template.Must(template.New("page").Funcs(template.FuncMap{
             <span class="pill">{{.Task.SelectedNode.Path}}</span>
             <span class="pill">{{.Task.SelectedNode.Progress}}%</span>
             <span class="pill">{{.Task.SelectedNode.Estimate}}</span>
+            {{if gt .Task.SelectedNode.UsageTokens 0}}<span class="pill">{{.Task.SelectedNode.UsageTokens}} tokens</span>{{end}}
           </div>
           <div class="detail-actions">
             <form method="post" action="/ui/nodes/{{.Task.SelectedNode.ID}}/claim"><button class="action-btn" type="submit">claim</button></form>
@@ -654,6 +660,7 @@ var uiPageTpl = template.Must(template.New("page").Funcs(template.FuncMap{
             <span class="pill {{statusClass .Task.NextNode.Status}}">{{.Task.NextNode.Status}}</span>
             <span class="pill">{{.Task.NextNode.Path}}</span>
             <span class="pill">{{.Task.NextNode.Progress}}%</span>
+            {{if gt .Task.NextNode.UsageTokens 0}}<span class="pill">{{.Task.NextNode.UsageTokens}} tokens</span>{{end}}
           </div>
           {{else}}
           <h2>{{.Task.Title}}</h2>
@@ -666,6 +673,7 @@ var uiPageTpl = template.Must(template.New("page").Funcs(template.FuncMap{
             <span class="pill">剩余 {{.Task.Remaining}} 节点</span>
             <span class="pill">阻塞 {{.Task.BlockCount}}</span>
             <span class="pill">{{.Task.Estimate}}</span>
+            {{if gt .Task.UsageTokens 0}}<span class="pill">{{.Task.UsageTokens}} tokens</span>{{end}}
           </div>
         </section>
 
@@ -688,6 +696,7 @@ var uiPageTpl = template.Must(template.New("page").Funcs(template.FuncMap{
                   <span class="pill {{statusClass .Status}}">{{.Status}}</span>
                   <span class="pill">{{.Progress}}%</span>
                   <span class="pill">{{.Estimate}}</span>
+                  {{if gt .UsageTokens 0}}<span class="pill">{{.UsageTokens}} tokens</span>{{end}}
                 </div>
               </a>
               {{end}}
@@ -761,9 +770,10 @@ var uiPageTpl = template.Must(template.New("page").Funcs(template.FuncMap{
             <strong>{{.Task.NextNode.Path}} · {{.Task.NextNode.Title}}</strong>
             <small>{{if .Task.NextNode.Instruction}}{{.Task.NextNode.Instruction}}{{else}}无 instruction{{end}}</small>
             <div class="meta">
-              <span class="pill {{statusClass .Task.NextNode.Status}}">{{.Task.NextNode.Status}}</span>
-              <span class="pill">{{.Task.NextNode.Progress}}%</span>
-            </div>
+            <span class="pill {{statusClass .Task.NextNode.Status}}">{{.Task.NextNode.Status}}</span>
+            <span class="pill">{{.Task.NextNode.Progress}}%</span>
+            {{if gt .Task.NextNode.UsageTokens 0}}<span class="pill">{{.Task.NextNode.UsageTokens}} tokens</span>{{end}}
+          </div>
           </div>
           {{else}}
           <div class="empty">当前没有可执行节点，可能任务已完成或被全部阻塞。</div>
@@ -865,6 +875,7 @@ var uiPageTpl = template.Must(template.New("page").Funcs(template.FuncMap{
           <div class="meta">
             <span class="pill {{statusClass .Status}}">{{.Status}}</span>
             <span class="pill">{{.Percent}}%</span>
+            {{if gt .UsageTokens 0}}<span class="pill">{{.UsageTokens}} tokens</span>{{end}}
           </div>
         </a>
         {{end}}
@@ -960,18 +971,19 @@ func (a *App) renderTaskDetailPage(w http.ResponseWriter, r *http.Request, taskI
 	}
 
 	detail := &uiTaskDetail{
-		ID:         asString(task["id"]),
-		TaskKey:    asString(task["task_key"]),
-		Title:      asString(task["title"]),
-		Goal:       asString(task["goal"]),
-		Status:     asString(task["status"]),
-		Percent:    percentInt(task["summary_percent"]),
-		UpdatedAt:  shortTime(task["updated_at"]),
-		Remaining:  int(asFloat(remaining["remaining_nodes"])),
-		BlockCount: int(asFloat(remaining["blocked_nodes"])),
-		Estimate:   fmt.Sprintf("剩余 %.1fh", asFloat(remaining["remaining_estimate"])),
-		NodeCount:  len(nodes),
-		ActiveTab:  strings.TrimSpace(r.URL.Query().Get("tab")),
+		ID:          asString(task["id"]),
+		TaskKey:     asString(task["task_key"]),
+		Title:       asString(task["title"]),
+		Goal:        asString(task["goal"]),
+		Status:      asString(task["status"]),
+		UsageTokens: asInt(task["usage_tokens"]),
+		Percent:     percentInt(task["summary_percent"]),
+		UpdatedAt:   shortTime(task["updated_at"]),
+		Remaining:   int(asFloat(remaining["remaining_nodes"])),
+		BlockCount:  int(asFloat(remaining["blocked_nodes"])),
+		Estimate:    fmt.Sprintf("剩余 %.1fh", asFloat(remaining["remaining_estimate"])),
+		NodeCount:   len(nodes),
+		ActiveTab:   strings.TrimSpace(r.URL.Query().Get("tab")),
 	}
 	if detail.ActiveTab == "" {
 		detail.ActiveTab = "edit"
@@ -1140,14 +1152,15 @@ func (a *App) renderSearchPage(w http.ResponseWriter, r *http.Request) {
 
 func toUITaskCard(task map[string]any) uiTaskCard {
 	return uiTaskCard{
-		ID:        asString(task["id"]),
-		TaskKey:   asString(task["task_key"]),
-		Title:     asString(task["title"]),
-		Goal:      asString(task["goal"]),
-		Status:    asString(task["status"]),
-		Percent:   percentInt(task["summary_percent"]),
-		UpdatedAt: shortTime(task["updated_at"]),
-		Deleted:   asString(task["deleted_at"]) != "",
+		ID:          asString(task["id"]),
+		TaskKey:     asString(task["task_key"]),
+		Title:       asString(task["title"]),
+		Goal:        asString(task["goal"]),
+		Status:      asString(task["status"]),
+		UsageTokens: asInt(task["usage_tokens"]),
+		Percent:     percentInt(task["summary_percent"]),
+		UpdatedAt:   shortTime(task["updated_at"]),
+		Deleted:     asString(task["deleted_at"]) != "",
 	}
 }
 
@@ -1159,6 +1172,7 @@ func toUINodeCard(node map[string]any) uiNodeCard {
 		Title:        asString(node["title"]),
 		Kind:         asString(node["kind"]),
 		Status:       asString(node["status"]),
+		UsageTokens:  asInt(node["usage_tokens"]),
 		Progress:     percentInt(node["progress"]),
 		Estimate:     fmt.Sprintf("%.1fh", asFloat(node["estimate"])),
 		Instruction:  singleLine(asString(node["instruction"])),
@@ -1246,4 +1260,3 @@ func singleLine(v string) string {
 	parts := strings.Fields(strings.ReplaceAll(v, "\n", " "))
 	return strings.Join(parts, " ")
 }
-

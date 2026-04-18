@@ -26,6 +26,7 @@ func (a *App) getRemaining(ctx context.Context, taskID string) (jsonMap, error) 
 	return jsonMap{
 		"task_id":            taskID,
 		"percent":            task["summary_percent"],
+		"usage_tokens":       task["usage_tokens"],
 		"remaining_nodes":    summary.RemainingCount,
 		"remaining_estimate": summary.RemainingEstimate,
 		"blocked_nodes":      summary.BlockedCount,
@@ -74,7 +75,7 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 		return nil, err
 	}
 	parentMatch := asString(node["parent_node_id"])
-	rows, err = a.queryContext(ctx, `SELECT id, parent_node_id, path, title, status, progress FROM nodes WHERE task_id = ? AND id != ? AND deleted_at IS NULL AND COALESCE(parent_node_id, '') = ? ORDER BY sort_order, created_at`, taskID, nodeID, parentMatch)
+	rows, err = a.queryContext(ctx, `SELECT id, parent_node_id, path, title, status, progress, usage_tokens, kind, role, depth FROM nodes WHERE task_id = ? AND id != ? AND deleted_at IS NULL AND COALESCE(parent_node_id, '') = ? ORDER BY sort_order, created_at`, taskID, nodeID, parentMatch)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +95,7 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 			"kind":           item["kind"],
 			"role":           item["role"],
 			"depth":          item["depth"],
+			"usage_tokens":   item["usage_tokens"],
 		})
 	}
 	remaining, err := a.getRemaining(ctx, taskID)
@@ -121,6 +123,7 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 			"status":          task["status"],
 			"result":          task["result"],
 			"project_id":      task["project_id"],
+			"usage_tokens":    task["usage_tokens"],
 			"summary_percent": task["summary_percent"],
 			"version":         task["version"],
 		},
@@ -140,6 +143,7 @@ func (a *App) getResumeContext(ctx context.Context, taskID, nodeID string, event
 			"progress":            node["progress"],
 			"estimate":            node["estimate"],
 			"kind":                node["kind"],
+			"usage_tokens":        node["usage_tokens"],
 			"version":             node["version"],
 		},
 		"memory":                memory,

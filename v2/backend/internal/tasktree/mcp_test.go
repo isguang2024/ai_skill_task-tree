@@ -82,7 +82,7 @@ func TestMCPInitializeAndToolCall(t *testing.T) {
 		t.Fatal("missing task id in create result")
 	}
 
-	_ = server.handle(mustRPCRequest(t, map[string]any{
+	createNodeResp := server.handle(mustRPCRequest(t, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      31,
 		"method":  "tools/call",
@@ -94,6 +94,68 @@ func TestMCPInitializeAndToolCall(t *testing.T) {
 			},
 		},
 	}))
+	if createNodeResp == nil || createNodeResp.Error != nil {
+		t.Fatalf("create node failed: %#v", createNodeResp)
+	}
+	createNodeResult, _ := createNodeResp.Result.(map[string]any)
+	createNodeContent, _ := createNodeResult["content"].([]map[string]any)
+	if len(createNodeContent) == 0 {
+		t.Fatal("missing create node content")
+	}
+	var createdNode map[string]any
+	if err := json.Unmarshal([]byte(createNodeContent[0]["text"].(string)), &createdNode); err != nil {
+		t.Fatal(err)
+	}
+	completeResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      33,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_complete",
+			"arguments": map[string]any{
+				"node_id":      stringValue(createdNode["id"]),
+				"message":      "MCP 节点完成",
+				"usage_tokens": 55,
+			},
+		},
+	}))
+	if completeResp == nil || completeResp.Error != nil {
+		t.Fatalf("complete tool failed: %#v", completeResp)
+	}
+	completeResult, _ := completeResp.Result.(map[string]any)
+	completeContent, _ := completeResult["content"].([]map[string]any)
+	if len(completeContent) == 0 {
+		t.Fatal("missing complete tool content")
+	}
+	if strings.Contains(completeContent[0]["text"].(string), "\"isError\":true") {
+		t.Fatalf("complete tool returned error payload: %s", completeContent[0]["text"].(string))
+	}
+	taskResp := server.handle(mustRPCRequest(t, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      34,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "task_tree_get_task",
+			"arguments": map[string]any{
+				"task_id": taskID,
+			},
+		},
+	}))
+	if taskResp == nil || taskResp.Error != nil {
+		t.Fatalf("get_task failed: %#v", taskResp)
+	}
+	taskResult, _ := taskResp.Result.(map[string]any)
+	taskContent, _ := taskResult["content"].([]map[string]any)
+	if len(taskContent) == 0 {
+		t.Fatal("missing task content")
+	}
+	var taskMap map[string]any
+	if err := json.Unmarshal([]byte(taskContent[0]["text"].(string)), &taskMap); err != nil {
+		t.Fatal(err)
+	}
+	if asInt(taskMap["usage_tokens"]) != 55 {
+		t.Fatalf("task result missing usage_tokens: %#v", taskMap["usage_tokens"])
+	}
 	summaryReq := mustRPCRequest(t, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      32,
@@ -456,10 +518,13 @@ func TestMCPArrayArgsStringCompatibility(t *testing.T) {
 	}
 	stagesResult, _ := stagesResp.Result.(map[string]any)
 	stageContent, _ := stagesResult["content"].([]map[string]any)
-	var stageItems []map[string]any
-	if len(stageContent) == 0 || json.Unmarshal([]byte(stageContent[0]["text"].(string)), &stageItems) != nil {
+	var stagesWrap struct {
+		Items []map[string]any `json:"items"`
+	}
+	if len(stageContent) == 0 || json.Unmarshal([]byte(stageContent[0]["text"].(string)), &stagesWrap) != nil {
 		t.Fatalf("invalid stages payload: %#v", stagesResult)
 	}
+	stageItems := stagesWrap.Items
 	if len(stageItems) != 2 {
 		t.Fatalf("expected 2 stages, got %d", len(stageItems))
 	}
@@ -589,12 +654,15 @@ func TestMCPExtendedToolsAndAliases(t *testing.T) {
 	if stagesResp == nil || stagesResp.Error != nil {
 		t.Fatalf("list stages failed: %#v", stagesResp)
 	}
-	var stageItems []map[string]any
+	var stagesWrap struct {
+		Items []map[string]any `json:"items"`
+	}
 	stagesResult, _ := stagesResp.Result.(map[string]any)
 	stagesContent, _ := stagesResult["content"].([]map[string]any)
-	if len(stagesContent) == 0 || json.Unmarshal([]byte(stagesContent[0]["text"].(string)), &stageItems) != nil || len(stageItems) < 2 {
+	if len(stagesContent) == 0 || json.Unmarshal([]byte(stagesContent[0]["text"].(string)), &stagesWrap) != nil || len(stagesWrap.Items) < 2 {
 		t.Fatalf("invalid stages payload: %#v", stagesResp.Result)
 	}
+	stageItems := stagesWrap.Items
 	stage2ID := stringValue(stageItems[1]["id"])
 
 	aliasActivateResp := server.handle(mustRPCRequest(t, map[string]any{
